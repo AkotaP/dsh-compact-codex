@@ -1,12 +1,21 @@
 {
   "name": "dsh-compact-codex",
-  "version": "1.1.2",
-  "description": "Codex 风格压缩后端：以可拆卸插件形式替换 dsh 的 ctx.compaction 服务，全局覆盖全部 agent preset。",
+  "version": "1.2.0",
+  "description": "可拆卸的 Codex 风格交接压缩：保留 DSH 默认触发策略与 /compact，不覆盖预设。",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AkotaP/dsh-compact-codex.git"
+  },
+  "homepage": "https://github.com/AkotaP/dsh-compact-codex",
+  "bugs": {
+    "url": "https://github.com/AkotaP/dsh-compact-codex/issues"
+  },
   "private": true,
   "type": "module",
-  "main": "./lib/index.js",
+  "main": "./lib/plugin.js",
   "exports": {
-    ".": "./lib/index.js",
+    ".": "./lib/plugin.js",
+    "./engine": "./lib/index.js",
     "./preset": "./lib/preset.js",
     "./client": "./lib/client.js",
     "./package.json": "./package.json"
@@ -19,13 +28,31 @@
       "platform": "web",
       "immediately": true,
       "inject": [
-        "@deepseek-ai/dsh-client-ui-conversation"
+        "@deepseek-ai/dsh-client-ui-conversation",
+        "@deepseek-ai/dsh-client-ui-settings",
+        "@deepseek-ai/dsh-client-ui-plugin-manager"
       ]
     }
   },
   "scripts": {
-    "sync": "node ./sync-presets.mjs",
-    "test": "node --test test/handoff.test.mjs"
+    "test": "node --import ./test/support/register-runtime.mjs --test --test-isolation=none test/*.test.mjs",
+    "install:profile": "node ./scripts/profile.mjs install",
+    "uninstall:profile": "node ./scripts/profile.mjs uninstall"
+  },
+  "engines": { "node": ">=22.15.0", "dsh": ">=0.2.2-rc.1 <0.3.0" },
+  "peerDependencies": {
+    "@deepseek-ai/schemastery": "^3.19.0",
+    "@deepseek-ai/dsh-compaction-basic": ">=0.2.2-rc.1 <0.3.0",
+    "@deepseek-ai/dsh-llm": ">=0.2.2-rc.1 <0.3.0",
+    "@deepseek-ai/dsh-util-values": ">=0.2.2-rc.1 <0.3.0",
+    "@deepseek-ai/dsh-scope": ">=0.2.2-rc.1 <0.3.0"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/schemastery": { "optional": true },
+    "@deepseek-ai/dsh-compaction-basic": { "optional": true },
+    "@deepseek-ai/dsh-llm": { "optional": true },
+    "@deepseek-ai/dsh-util-values": { "optional": true },
+    "@deepseek-ai/dsh-scope": { "optional": true }
   },
   "license": "MIT"
 }

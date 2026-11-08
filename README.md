@@ -1,242 +1,184 @@
 # dsh-compact-codex
 
-Codex 风格的压缩后端。以可拆卸插件形式接管 dsh 的 `ctx.compaction` 服务，替换 `@deepseek-ai/dsh-compaction-basic`，对**所有 agent preset** 生效——不是绑在某一个预设上。
+[![](https://img.shields.io/badge/powered_by-dsh-4D6BFE?style=flat-square&logo=deepseek&logoColor=white)](https://github.com/deepseek-ai/deepseek-harness)
 
-它**只做换窗，不做摘要**：上下文接近窗口上限时，不发起模型调用，直接以一条代码拼出的交接信息替换整段历史。由此绕开「为了压缩而发的请求本身也超限」的死循环，也让换窗不再花时间和额度。
+[English](README.en.md) | 中文
 
-围绕换窗，插件另外补了三件事：换窗后不丢「打算做什么」的任务账本、能按编号回查被遮蔽历史的历史检索、以及判断换窗时机的缓存观测。
+> **Fork 说明**：本仓库 fork 自 [niszhum/dsh-compact-codex](https://github.com/niszhum/dsh-compact-codex)，由 [AkotaP](https://github.com/AkotaP) 维护。从 1.2 起接入方式改为最小侵入，与上游 1.1.2 的“替换压缩服务”路线不同；上游历史见[上游仓库](https://github.com/niszhum/dsh-compact-codex/commits/main)，本仓库变更见 [CHANGELOG](<CHANGELOG.md>)。
 
-## 特性
+DSH（DeepSeek Harness）插件：在压缩点用程序生成的上下文交接替代模型摘要。生成不调用模型，因此瞬间完成；会话日志不被删除，旧内容仍可按事件编号回查。
 
-- **零摘要换窗**：完全不调模型，检查点是代码拼出的交接信息，按时间倒序排：最新请求（原话）、上一轮助手回复、账本主页、最近的动作、文件工作集、更早的请求轨迹、任务起点（首个请求原话）。换窗与账本读写这类自指动作不进动作段——新窗口会把「上一步刚换过窗」读成待办，接着再换一次。
-- **编号可回查**：交接信息里的 `#编号` 是会话事件的 `seq`，用 `history` 工具按编号读原文，包括被压缩遮蔽的部分——不需要另存历史副本。
-- **任务账本**：跨窗口保留意图与下一步。标 `done` 必须给出真实成功的工具结果编号，锚点必须能在文件里唯一定位，两条规则由代码把关。一个任务的记录按字数预算从新往旧取，不按条数砍——最旧的那条常常最关键（数据源定稿、硬约束、踩过的坑），而前一次换窗已经把正文遮掉了，丢了就再也找不回来。
-- **换窗前自动快照**：压力换窗与冷缓存换窗发生时模型往往来不及记账，插件会先由代码把未记账的工具结果归档成一条快照（`through` 盖到当前历史编号），账本时间线由此与交接信息对齐——新窗口不会拿过时的「进行中」记录重推已完成的步骤。摘要只写工具名加参数，记账与换窗这类自指动作不归档。
-- **压前最后一道闸**：压力压缩真正执行前，若账本还不新，先推迟一步把记账提醒送进当前回合，下一次步边界照压。提醒一个窗口只发一次——基类的阈值比本插件高时，它会连着好几步都不压，只看「在推迟中就发」会让同一句提醒在每个步边界、每次 `pre-step` 调用各刷一遍。
-- **两个提示时点**：平时不注入任何 token 数字——模型看到数字就会去算，那是纯分心。压前闸推迟的那一步注入一条只要求记账的提示；越过压缩点那一刻改注入换窗指令：先 `ledger_append`，再 `new_context`，不要先结束回合。带具体用量的读数是可选诊断（`budgetContext`），默认关闭。
-- **缓存观测与保活**：从 provider 报的读写缓存量判断前缀规模与冷热，并在读数里显示；空闲时按次数预算保活缓存，让下一次请求仍命中已有前缀。保活会发真实请求消耗额度，有前缀下限、空闲预算与连续失败即停三层收口。
-- **冷缓存换窗**：缓存已过期且上下文够大时主动换窗，此时整段重写前缀已不可避免。不调模型，默认开启。
-- **浏览器半侧渲染**：交接信息渲染成一张可折叠的卡片，而不是官方压缩行样式里的一行灰字。无构建步骤，手写即产物。
+## 解决的问题
 
-## 界面
+DSH 默认压缩要让模型先读完整段历史、再写一份摘要：
 
-换窗时落地的交接信息不再走官方那套「一行灰色小字 + 可展开正文」，而是渲染成一张卡片，与普通消息一眼可分。自上而下是折叠态、展开态，以及与普通助手回复的对照：
+- **慢**：一次压缩等于一次完整模型请求，长会话通常要等几十秒。
+- **贵**：压缩本身也消耗 token 与额度。
+- **有损**：摘要不可逆，命令原文、报错细节、具体路径很容易被抹掉。
 
-![交接卡片的折叠态、展开态，与普通助手回复的对照](preview-handoff.png)
+本插件在压缩点直接读取已有会话事件与任务账本，拼出一份结构化交接信息。它不请求模型，不动官方压缩策略，也不删除任何历史。
+
+## 行为
+
+1. **定位**：宿主入口按 agent 查询其实际使用的 `compaction` 服务，而不是按 preset 名称替换配置。
+2. **判定**：只接受 prototype 精确等于官方 `BasicCompactionEngine.prototype`、且未被其他逻辑设置实例级 `summarize` 的实例；自定义后端、子类与已被装饰的实现保留原行为。
+3. **装饰**：在该实例上安装可恢复的 `summarize()` 包装，不改官方 prototype，不重建引擎。
+4. **分流**：包装按 owner agent 区分——已登记 agent 使用代码交接，其他 owner 回退原方法。
+5. **显示**：浏览器端只对来源为 `compact-checkpoint` 且含插件交接标题的消息渲染交接卡片，不隐藏官方压缩行。
+6. **恢复**：禁用或卸载时还原本插件安装的方法，并释放 agent 作用域中的工具、监听器与保活资源；已生成的压缩历史不回滚。
+
+## 功能与边界
+
+- **上下文交接**：整理最新请求、上次助手回复、任务账本、最近动作和文件工作集；条目上的事件编号可用于回查原文。
+- **任务账本**：保存进度、下一步、验收条件与证据；交接前尝试记录未记账动作的自动快照。
+- **历史检索**：从宿主会话事件检索或按编号分页读取，包括仍在日志中的被压缩事件。
+- **缓存观测**：依据 provider 用量与本地 TTL 假设估计冷热；冷缓存换窗与付费保活默认都关闭，需要时在插件详情页显式开启。
+- **可逆接入**：见上文第 3、6 条；不改写任何 preset 声明。
+
+自动触发、阈值、近期历史保留、事务与 `/compact` 仍由官方 Basic 后端负责。交接生成本身不调用模型，但不表示整个会话不产生模型请求或费用，也不表示每次压缩都替换全部历史。
+
+交接信息有预算与截断，账本也依赖记录质量与存储可用性，不能保证信息无损。日志保留不等于所有信息始终位于模型当前上下文中。
+
+![交接卡片预览；不是当前宿主验收记录](<preview-handoff.png>)
 
 ## 环境要求
 
-- Node.js ≥ 22.5.0（随 dsh 的要求）
-- 一份已安装并可运行的 dsh
-- pnpm（用于 profile 依赖安装）
-- git（安装脚本自动获取仓库时用；仓库已在本地则不必）
+- Node.js ≥ 22.15.0。
+- DSH `>=0.2.2-rc.1 <0.3.0`：当前接入依赖该版本的宿主 peer resolver 与 agent scope 接口。
+- pnpm，用于同步目标 profile 的依赖；自动下载仓库另需 git。
+
+运行时依赖由 DSH 宿主解析，包括 Desktop 的 asar 内包。安装脚本不创建运行时联接，不要求把官方运行时包复制到仓库。普通 Node 直接导入插件不等于在 DSH 宿主中加载；离线测试使用独立 stub。
 
 ## 安装
 
-一条命令，在 PowerShell 里跑：
+> 安装会修改 `%USERPROFILE%\.dsh` 下的 profile 配置，影响共享该 profile 的会话，请确认后执行。用脚本或 CLI 写 profile 前，**必须先完全退出使用该 profile 的 DSH**；在插件页内安装不需要退出。装好后不要自动重启 DSH 或打断正在运行的会话，只有宿主明确要求时才询问是否重启。
+
+仓库：<https://github.com/AkotaP/dsh-compact-codex>
+
+**从插件页安装**：侧边栏「插件」→「添加插件」，填入仓库地址 `https://github.com/AkotaP/dsh-compact-codex`。DSH 会先用 `git ls-remote` 探测仓库，再交给 pnpm；装完确认列表里该插件为启用状态。
+
+**命令行安装**（desktop profile 由 Electron 独占管理，执行前先完全退出 DSH）：
 
 ```powershell
-iwr https://raw.githubusercontent.com/niszhum/dsh-compact-codex/main/install.ps1 -UseBasicParsing -OutFile "$env:TEMP\install-compact-codex.ps1"; & "$env:TEMP\install-compact-codex.ps1"
+dsh plugin --profile desktop add https://github.com/AkotaP/dsh-compact-codex
 ```
 
-它按顺序做五件事：把仓库克隆到 `$DshHome\plugins\dsh-compact-codex`、把插件 import 的运行时包联接进该仓库的 `node_modules\@deepseek-ai\`、从官方 preset 生成 `cordis.patch.yml`、把本包写进 profile 的 `dependencies` 与 `dsh.profile.bundles`、最后 `pnpm install`。动过的文件先备份成 `*.bak-compact-codex-<时间戳>`，重复执行是幂等的。
+安装命令只把包加入 profile 的依赖；确认 `dsh.profile.bundles` 中包含 `dsh-compact-codex`，重启 DSH 后插件才加载。包内 [cordis.patch.yml](<cordis.patch.yml>) 只插入 `compact-codex` 一行，不要再往 profile patch 里重复添加。
 
-装完重启 dsh。
+**让 agent 安装**（把下面这段发给 DSH 里的 agent）：
 
-本地已经克隆过仓库时，直接在仓库根目录跑 `.\install.ps1`，跳过克隆那一步。
+> 把 `https://github.com/AkotaP/dsh-compact-codex` 装进当前 DSH 的 desktop profile：用侧边栏「插件」页的「添加插件」，或先完全退出 DSH 再执行 `dsh plugin --profile desktop add https://github.com/AkotaP/dsh-compact-codex`。装完确认 profile 的 `dsh.profile.bundles` 里包含 `dsh-compact-codex`，并确认插件页能看到该插件；只有宿主明确要求时才询问是否重启，不要自动重启。
 
-`irm … | iex` 走不通：`iex` 只把内容当命令表达式解析，脚本里的 `param` 块会被判成语法错误。所以先把脚本落盘、再执行落盘的那一份。
-
-### 参数
-
-| 参数 | 默认 | 用途 |
-| --- | --- | --- |
-| `-Profile` | `desktop` | 挂到哪个 profile |
-| `-DshHome` | `$env:USERPROFILE\.dsh` | dsh 的 home 目录 |
-| `-InstallDir` | `$DshHome\plugins\dsh-compact-codex` | 自动获取时仓库落在哪 |
-| `-Repo` | 脚本所在目录 | 本地已有仓库时直接指定 |
-| `-DshApp` | 自动探测 | dsh 的 `resources\app\dsh` 目录 |
-| `-SkipPnpm` | 关 | 跳过 `pnpm install` |
-| `-DryRun` | 关 | 只打印将要执行的动作，不落盘 |
-
-要传参数（试运行、换 profile）时，加在第二步后面：
+**本地开发**（link 方式，源码改动实时生效，需要先退出 DSH）：
 
 ```powershell
-& "$env:TEMP\install-compact-codex.ps1" -DryRun
+# 在仓库根目录
+node ./scripts/profile.mjs install --dry-run
+node ./scripts/profile.mjs install
 ```
 
-### 手动安装
+[profile 脚本](<scripts/profile.mjs>) 按以下顺序操作：
 
-不想跑脚本时，三步，每一步都可逆。
+1. 读取已存在的 profile，备份清单及已存在的 lockfile。
+2. 把本地仓库以 `link:` 形式写入 profile 的 `dependencies`。
+3. 在 profile 中运行 `pnpm install --ignore-scripts --no-frozen-lockfile`。
+4. 依赖安装成功后才把包加入 `dsh.profile.bundles`。
 
-**其一，把包链入 profile。** 在 `$DSH_HOME/profiles/<name>/package.json` 的 `dependencies` 加入（示例里的 `desktop` 是默认 profile 名）：
+脚本的 `wx` 锁只防止本安装器同时执行，不与 DSH 或编辑器共享写锁；读后比较再 rename 仅是 best-effort 过期检查，不是对其他写入者的原子 CAS。目标 profile 的清单或 lockfile 为符号链接或非普通文件时拒绝写入；dry run 报告 `requiresExclusiveProfileAccess: true`，不表示已经取得独占访问。依赖安装失败时会尝试恢复原清单，但 pnpm 对 lockfile 或依赖目录的影响不保证全部撤销。
 
-```json
-"dsh-compact-codex": "link:<repo>"
-```
+### 路径与参数
 
-**其二，加入 bundle 链。** 同一文件的 `dsh.profile.bundles` 末尾追加：
+显式 profile 目录优先；未显式提供 home 或 profile 时，优先使用 `DSH_PROFILE_DIR`，否则组合 `DSH_HOME`、`DSH_PROFILE`；缺省 home 为 `~/.dsh`，profile 为 `desktop`。
 
-```json
-"dsh-compact-codex"
-```
-
-必须排在 `@deepseek-ai/dsh-web-app` **之后**，否则它自带的 patch 会被官方 preset 声明覆盖回去。
-
-**其三，同步依赖并安装。**
-
-```powershell
-cd <repo>
-node ./sync-presets.mjs          # 生成 cordis.patch.yml
-cd "$env:USERPROFILE\.dsh\profiles\desktop"
-pnpm install
-```
-
-最后重启 dsh。
-
-插件 import 的是 dsh 运行时提供的包，它们不在插件目录的解析路径上；本包用目录联接把它们接进 `node_modules/@deepseek-ai/`，具体命令见 [实现说明](docs/internals.md#依赖解析)。
-
-## 快速开始
-
-装好之后不需要额外配置。缓存保活默认开启——它会在会话空闲时发真实请求以维持缓存命中，不需要就设 `keepalive: false`。
-
-重启 dsh 后，对话里默认不会出现任何预算数字：整套压缩对模型是隐形的，直到越过压缩点那一刻。
-
-越过压缩点时模型会收到一条不含数字的提示：
-
-```markdown
-Context compaction is available now: this window has reached its compaction point.
-Do two things in the current turn, in this order.
-First call ledger_append: the task id, what is done, and the single next step.
-Then call new_context to reset the window — its ledger gate opens once this window has an entry for the current request.
-Do not end the turn first: an idle window at the compaction point has no step left to act on it.
-```
-
-在那之前还有一次**压前记账提醒**：压力压缩真正执行前，若账本不新会先推迟一步，把记账提示送进当前回合。它在时序上是必要的——压缩点那一刻基类已经压完了，提示赶不上；而推迟那一步是压缩前唯一一个「提醒还来得及」的位置。
-
-收到换窗指令后模型先记账、再换窗，整段历史被换成一条交接信息，在界面上渲染成一张卡片。要看具体用量时把 `budgetContext` 打开，读数才会按 `budgetRefreshMs` 的间隔注入（含缓存冷热那一行）。
-
-## 工具
-
-插件向模型注册四个工具：
-
-| 工具 | 说明 |
+| 参数 | 用途 |
 | --- | --- |
-| `new_context` | 模型主动请求换窗。调用只登记请求，在下一个步边界消费并执行换窗；环境状态不受影响。窗口刚重置过、还空着时直接拒绝并说明，避免补做上一个窗口没做完的动作 |
-| `ledger_append` | 向任务账本追加一条记录。这是模型自己的义务、不是等提醒——完成一个阶段就记一条。`task_id` 标识任务，`status` 取 `in_progress` / `done` / `superseded` / `blocked`，未完成时写 `next_step`（接着做什么）、`done_when`（做到哪算完）与 `anchors` |
-| `ledger_read` | 读任务账本。`view` 取 `home`（概览）/ `current`（当前窗口）/ `search`（按词搜索） |
-| `history` | 检索或读取历史。`action` 为 `search`（按词、角色、工具名、路径、窗口过滤）或 `read`（按编号读原文，`field: "input"` 读那次调用的完整参数） |
+| `--profile-dir <path>` | 指定已存在的 profile 目录 |
+| `--home <path>` | 指定 DSH home |
+| `--profile <name>` | 指定 profile 名 |
+| `--repo <path>` | 指定本地仓库 |
+| `--dry-run` | 只显示计划，不写文件、不执行 pnpm |
+| `--skip-pnpm` | 跳过依赖同步；新安装只准备依赖声明，不启用 bundle |
 
-`new_context` 有两道账本门槛，任一不成立就拒绝换窗并说明原因：本窗口在最新用户请求之后记过账，且最近一次记账之后未记账的工具结果不超过 25 个。账本还空着时不拦。
+使用 `--skip-pnpm` 不代表安装完成；应修复依赖后重新执行正常安装。
 
 ## 配置
 
-在 profile patch 或 preset 里给这一行加 config：
-
-```yaml
-- id: compaction-basic
-  name: 'dsh-compact-codex'
-  config:
-    handoffTokens: 20000      # 交接信息的规模上限（估算 token）
-    thresholdRatio: 0.5
-    retainTokens: 32768
-    budgetContext: false      # 诊断读数，默认关闭（发数字会让模型去算）
-    budgetRefreshMs: 600000   # 读数节流间隔，0 为每步都发
-```
-
-本插件自有字段：
+位置：**设置 → 插件 → 本插件详情页**。表单按「基础 / 缓存保活（付费） / 冷缓存换窗 / 诊断」四组卡片展示，每个字段附一行说明；保存的是 `compact-codex` 行的整个 `options` 对象，只读、服务不可用或保存失败时以页面提示为准。
 
 | 字段 | 默认 | 含义 |
 | --- | --- | --- |
-| `style` | `"reset"` | 只接受 `"reset"`（换窗、不调模型）。配其他值会在载入期报错，提示卸载本插件 |
-| `handoffTokens` | `15000` | `reset` 模式交接信息的规模上限（估算 token） |
-| `budgetContext` | `false` | 是否注入带具体用量的诊断读数（含缓存冷热与 provider 实报／本地估算的偏差比）。默认关闭；压缩点提示不受这个开关影响 |
-| `budgetRefreshMs` | `600000` | 诊断读数之间的最小间隔（仅 `budgetContext` 打开时生效）；`0` 为每步都注入 |
-| `keepalive` | `true` | 是否在空闲时保活缓存。**会发真实请求消耗额度**，不需要时关掉 |
-| `cacheTtlMs` | `3600000` | 缓存 TTL 的假设值。provider 侧的真实值不下发，所以可配 |
-| `keepaliveAfterMs` | `3120000` | 空闲多久开始保活 |
-| `minCacheReadTokens` | `40000` | 前缀规模低于此值时，重写它的代价与保活一次相当 |
+| `enabled` | `true` | 启用实例适配与 agent 辅助功能 |
+| `handoffTokens` | `20000` | 交接信息的估算 token 预算，整数范围 1000–64000，不是严格输出上限 |
+| `budgetContext` | `false` | 向模型注入预算与缓存诊断读数 |
+| `keepalive` | `false` | 空闲缓存保活；开启后会发真实模型请求并消耗额度 |
+| `cacheTtlMs` | `3600000` | 缓存 TTL 假设（毫秒）；超过即视为过期 |
+| `keepaliveAfterMs` | `3120000` | 空闲多久后开始保活（毫秒） |
+| `minCacheReadTokens` | `40000` | 保活的前缀规模下限（token） |
 | `idleKeepaliveBudget` | `3` | 两次真实请求之间最多保活几次 |
-| `maxConsecutiveFailures` | `2` | 连续失败这么多次就停，不再重试 |
-| `coldSwitch` | `true` | 冷缓存时主动换窗（不调模型，所以默认开） |
-| `coldMinTokens` | `100000` | 冷缓存换窗的上下文下限，低于此值时换窗省下的重写不足以抵消换窗本身 |
-| `checkEveryMs` | `15000` | 缓存保活检查的周期（另有 idle 事件补一次机会） |
+| `maxConsecutiveFailures` | `2` | 连续失败达到该次数后停止保活 |
+| `coldSwitch` | `false` | 缓存过期后是否在下一步主动换窗 |
+| `coldMinTokens` | `100000` | 触发冷换窗的上下文下限（token） |
+| `checkEveryMs` | `15000` | 冷热状态检查周期（毫秒） |
 
-其余字段与 `dsh-compaction-basic` 完全一致，语义不变。载入期校验同样适用：`retainTokens` 必须小于 `thresholdTokens`，`retainRatio` 必须小于 `thresholdRatio`。
+**两个自动行为默认都关闭**：`keepalive` 会发真实请求并产生费用；`coldSwitch` 会在缓存过期后的下一步主动换窗。需要时再显式打开。阈值、保留比例和路由策略仍配置在官方 Basic 后端，不属于本插件详情表单。
 
-**不要直接改 `cordis.patch.yml`**，它每次都会被 `sync-presets.mjs` 覆盖。把要注入的配置写成同目录的 `preset-config.json`，再跑 `node ./sync-presets.mjs`，配置会挂到三个 preset 的压缩行上：
+1.1 及更早版本使用的 `preset-config.json` 已从仓库移除；详情页不会读取或迁移它，旧引擎专用字段也不能直接当作宿主 `options`。保留的显式引擎入口仅用于兼容调用，不是推荐安装方式。1.2 起不再提供 preset 同步脚本。
 
-```json
-{
-  "handoffTokens": 20000
-}
-```
+## 工具
 
-不必写 `style`——本插件只接受 `"reset"`，写成别的值会在载入期直接报错。
+仅在已适配 agent 的作用域中注册：
 
-## 脚本
-
-| 脚本 | 用途 |
+| 工具 | 用途 |
 | --- | --- |
-| `install.ps1` | 一条命令安装：获取仓库、联接运行时依赖、生成 `cordis.patch.yml`、挂进 profile、`pnpm install`。`-DryRun` 只看不改 |
-| `sync-presets.mjs` | 从官方 bundle 的 preset 生成 `cordis.patch.yml`，只替换压缩后端的模块名 |
+| `new_context` | 登记换窗请求，在后续允许执行的步边界复核后调用官方 `compactRegion()` |
+| `ledger_append` | 追加任务进度、下一步、验收条件和证据 |
+| `ledger_read` | 读取概览、当前窗口记录或搜索账本 |
+| `history` | 搜索会话事件，或按编号分页读取正文和调用参数 |
 
-dsh 升级后重跑一次即可重新对齐：
+账本非空时，主动换窗要求当前窗口内最近请求后的记账足够新，且未记账工具结果不超出门槛；没有新请求时仍检查未记账尾部。工具返回“已登记”不等于压缩已完成，应查看后续事件。
 
-```powershell
-cd <repo>
-node ./sync-presets.mjs
-```
-
-四个工具的注册是一次性的：启动时经 `ctx.inject(['tools'], …)` 注册，失败只在 stderr 打一行 `<工具名> tool not registered`。判断注册结果，看启动输出里有没有那一行——没有即为注册成功。
-
-## 项目结构
-
-```text
-├─ lib/
-│  ├─ index.js              压缩引擎、预算读数、四个工具的注册
-│  ├─ client.js             浏览器半侧：交接卡片的渲染器
-│  ├─ ledger.js             任务账本的校验与渲染
-│  ├─ cache.js              缓存冷热判定与保活决策
-│  └─ preset.js             preset 入口
-├─ test/
-│  └─ handoff.test.mjs      离线断言：交接信息结构、账本字段、PTC 路径解析
-├─ docs/
-│  ├─ how-it-works.md       换窗机制、交接信息、预算读数、账本、历史、缓存
-│  └─ internals.md          preset 覆盖语义、依赖解析、实现对齐与已知边界
-├─ .agents/
-│  └─ notes/                决策记录：为什么这么做、否决过哪些替代方案
-├─ cordis.patch.yml         生成物，由 sync-presets.mjs 覆盖
-├─ preset-config.json       配置覆盖
-├─ install.ps1              一条命令安装
-├─ sync-presets.mjs         生成 cordis.patch.yml
-├─ preview-handoff.html     交接卡片的预览页（上图即由它截出，非运行期产物）
-├─ preview-handoff.png
-├─ LICENSE                  MIT
-└─ package.json
-```
-
-## 测试
-
-离线断言，不启动 dsh、不调模型：
+## 验证
 
 ```powershell
-node --test test/handoff.test.mjs
+npm test
 ```
 
-需要仓库 `node_modules` 里的运行时包（`install.ps1` 建的目录联接），否则 `lib/index.js` 的 import 解析不到。
+离线测试通过[测试注册器](<test/support/register-runtime.mjs>)显式加载 stub，不启动真实 profile，也不验证当前 GUI、真实模型缓存命中或付费请求。真实宿主隔离 smoke、实际安装和浏览器 UI 验收应单独记录；此处不列未经确认的测试通过数。
+
+安装完成后可确认：插件页显示启用、profile 的 `dsh.profile.bundles` 含 `dsh-compact-codex`、下一次压缩生成带交接标题的消息而不是模型摘要。
+
+## 卸载与升级
+
+**在插件页内卸载**：侧边栏「插件」→ 本插件 → 卸载，随后确认 `dsh.profile.bundles` 中已移除。
+
+**用脚本卸载**（需要先退出 DSH，对应本地 link 安装）：
+
+```powershell
+node ./scripts/profile.mjs uninstall --dry-run
+node ./scripts/profile.mjs uninstall
+```
+
+脚本卸载先移除 bundle 与依赖声明，再同步依赖；同步失败不会重新启用 bundle，但可能仍需修复依赖目录或 lockfile。宿主内禁用或卸载插件时的资源释放属于插件生命周期，不受脚本独占访问要求影响。
+
+卸载不是零残留清理：历史日志、任务账本、诊断文件、仓库与备份均保留，也不恢复已经压缩的历史表面。GUI 保存过的配置可能在 profile patch 中留下无效行；脚本不自动删除此类配置或其他手工改动，应核对后决定是否移除。
+
+从上游 1.1.x 升级到本 fork 的 1.2.x 时，应检查旧的 preset 覆盖与手工运行时联接，备份后按来源分别处理。新脚本不会扫描删除这些旧内容，也不会用旧备份整体覆盖现有 profile。DSH 升级后无需重新同步 preset，但应复核宿主接口兼容性。
+
+## 与上游的差异
+
+| | 上游 1.1.2 | 本 fork 1.2.x |
+| --- | --- | --- |
+| 接入点 | 替换 `ctx.compaction` 服务、覆写 preset | 只装饰官方实例的 `summarize()` |
+| 自定义后端 | 一并接管 | 不接管，保留原行为 |
+| 配置 | `preset-config.json` + preset patch | 插件详情页的 volatile `options` |
+| 安装 | 脚本写 preset | 插件页 / git / 本地 link |
 
 ## 文档
 
-- [工作原理](docs/how-it-works.md)——换窗怎么落地、交接信息由哪几段组成、账本与历史为什么这么设计、缓存冷热怎么判断
-- [实现说明](docs/internals.md)——为什么必须整份覆盖 preset 声明、依赖怎么接、`new_context` 与 codex-rs 的对齐、改动代码时的底层约束
-
-## 卸载
-
-从 profile 的 `dsh.profile.bundles` 移除 `"dsh-compact-codex"`，`pnpm install`，重启。官方 `compaction-basic` 完整恢复，无需改动任何官方文件。
-
-安装时的备份在同目录：`package.json.bak-compact-codex-<时间戳>`、`pnpm-lock.yaml.bak-compact-codex-<时间戳>`。
+- [工作原理](<docs/how-it-works.md>)：交接、账本、历史与缓存。
+- [实现说明](<docs/internals.md>)：实例适配、作用域、配置与安装边界。
+- [变更记录](<CHANGELOG.md>)：各版本变更。
 
 ## 许可证
 
-[MIT](LICENSE)
+[MIT](<LICENSE>)

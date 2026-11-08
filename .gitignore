@@ -6,6 +6,9 @@ node_modules/
 *.tmp
 _*
 
+# Mnemon 运行时记忆（本地状态，不入库）
+.mnemon/
+
 # 编辑器与系统
 .DS_Store
 .vscode/

@@ -1,8 +1,8 @@
 /**
  * 交接信息与账本的离线断言：不依赖真实会话日志，也不启动 dsh。
  *
- * 跑法：在仓库根目录 `node --test test/`。需要 node_modules 里的运行时包
- * （install.ps1 建的目录联接），否则 lib/index.js 的 import 解析不到。
+ * 跑法：`npm test`，由 test/support/register-runtime.mjs 注入运行时 stub，
+ * 不需要 node_modules。
  */
 
 import { test } from 'node:test'
