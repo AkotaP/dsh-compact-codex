@@ -24,14 +24,14 @@
 实例准入条件包括：
 
 - `Object.getPrototypeOf(engine) === BasicCompactionEngine.prototype`。
-- 未存在实例自身的 `summarize` 属性描述符，继承的方法可调用。
+- 未存在实例自身的 `summarize` 属性描述符，继承的方法可调用；`compactIfNeeded` 同理，仅在该实例没有自有实现时包装。
 - agent 有可用上下文与 scope，且插件仍启用。
 
-不使用宽泛 `instanceof` 接管自定义子类，不写官方 prototype，不替换 `ctx.compaction` 服务，也不重写任何 preset 声明。官方 Basic 的自动触发、阈值、保留策略、事务和 `/compact` 均保持。旧文档所述“必须整份搬运 preset”不适用于此架构。
+不使用宽泛 `instanceof` 接管自定义子类，不写官方 prototype，不替换 `ctx.compaction` 服务，也不重写任何 preset 声明。实例级装饰只用于两个钩子：`summarize()` 生成交接，`compactIfNeeded()` 作压前闸。官方 Basic 的自动触发、阈值、保留策略、事务和 `/compact` 均保持。旧文档所述“必须整份搬运 preset”不适用于此架构。
 
 ## 可逆装饰与作用域
 
-每个后端实例保存原 `summarize` 与本插件包装函数，每个 agent 保存配置、实例记录和独立作用域。包装按 owner 查找成员，未登记或停用时调用原方法；已登记时调用代码交接生成器。多个 agent 共用一个实例时分别追踪成员，不提前移除仍有成员使用的包装。
+每个后端实例保存原 `summarize`、原 `compactIfNeeded` 与本插件包装函数，每个 agent 保存配置、实例记录和独立作用域。包装按 owner 查找成员，未登记或停用时调用原方法；已登记时调用代码交接生成器。多个 agent 共用一个实例时分别追踪成员，不提前移除仍有成员使用的包装。
 
 辅助功能使用：
 
@@ -55,6 +55,7 @@ agent 释放、后端变化、配置禁用或插件卸载时，应移除成员�
   "enabled": true,
   "handoffTokens": 20000,
   "budgetContext": false,
+  "preCompactNudge": true,
   "keepalive": false,
   "cacheTtlMs": 3600000,
   "keepaliveAfterMs": 3120000,

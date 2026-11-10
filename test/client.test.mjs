@@ -5,7 +5,7 @@ import vm from 'node:vm'
 
 const client = await readFile(new URL('../lib/client.js', import.meta.url), 'utf8')
 const defaults = {
-  enabled: true, handoffTokens: 20000, budgetContext: false,
+  enabled: true, handoffTokens: 20000, budgetContext: false, preCompactNudge: true,
   keepalive: false, cacheTtlMs: 3600000, keepaliveAfterMs: 3120000,
   minCacheReadTokens: 40000, idleKeepaliveBudget: 3, maxConsecutiveFailures: 2,
   coldSwitch: false, coldMinTokens: 100000, checkEveryMs: 15000

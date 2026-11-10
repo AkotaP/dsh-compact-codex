@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { mkdtempSync, rmSync, writeFileSync, readdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { __test, attachCodexFeatures, buildHandoffOptions } from '../lib/index.js'
+import { __test, attachCodexFeatures, buildHandoffOptions, createPreCompactGate } from '../lib/index.js'
 import { initialCacheState, noteRequest, decideKeepalive } from '../lib/cache.js'
 
 const ENTER = { kind: 'enter', messages: [] }
@@ -310,4 +310,19 @@ test('budget callback does not read or inject after disposal during next or mode
   assert.equal(meterReads, 0)
   assert.equal(infoReads, 0)
  }
+})
+
+test('pre-compact gate defers one pressure compaction per window and ignores other triggers', async (t) => {
+  homeOf(t)
+  const config = { thresholdRatio: 0.8, headroomTokens: 0 }
+  const model = () => ({ context: { contextWindow: 100_000 }, defaultMaxTokens: 2000 })
+  const gate = createPreCompactGate({ llm: { resolveModelInfo: async () => model() }, tokenMeter: { measure: () => ({ totalTokens: 90_000 }) } })
+  const session = { id: 'gate-session', requestHeader: () => ({ config: { provider: 'p', model: 'm', maxTokens: 1000 } }) }
+  const agent = { session }
+  assert.equal(await gate(agent, config, 'context-overflow', undefined), false)
+  assert.equal(await gate(agent, config, 'pressure', undefined), true)
+  assert.equal(await gate(agent, config, 'pressure', undefined), false)
+  const low = createPreCompactGate({ llm: { resolveModelInfo: async () => model() }, tokenMeter: { measure: () => ({ totalTokens: 1000 }) } })
+  const other = { id: 'gate-low', requestHeader: () => ({ config: { provider: 'p', model: 'm', maxTokens: 1000 } }) }
+  assert.equal(await low({ session: other }, config, 'pressure', undefined), false)
 })

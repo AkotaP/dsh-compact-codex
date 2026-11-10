@@ -8,6 +8,7 @@ class Basic {
  async summarize(input, agent, signal) { return { original: true, input, agent, signal } }
  async compactNow(agent, signal) { return this.summarize('manual', agent, signal) }
  async compactRegion(_start, _end, agent, signal) { return this.summarize('automatic', agent, signal) }
+ async compactIfNeeded(agent, trigger, signal) { return { compact: true, agent, trigger, signal } }
 }
 function fixture(overrides = {}) {
  const scopes = [], attached = []
@@ -24,6 +25,7 @@ function fixture(overrides = {}) {
 test('defaults never enable paid keepalive or cold switching; volatile ref and input validation', () => {
  assert.equal(DEFAULT_OPTIONS.keepalive, false)
  assert.equal(DEFAULT_OPTIONS.coldSwitch, false)
+ assert.equal(DEFAULT_OPTIONS.preCompactNudge, true)
  assert.equal(DEFAULT_OPTIONS.cacheTtlMs, 3600000)
  assert.equal(DEFAULT_OPTIONS.coldMinTokens, 100000)
  assert.deepEqual(resolveOptions(undefined), DEFAULT_OPTIONS)
@@ -33,6 +35,7 @@ test('defaults never enable paid keepalive or cold switching; volatile ref and i
  assert.throws(() => resolveOptions({ handoffTokens: 0 }), /handoffTokens/)
  assert.throws(() => resolveOptions({ cacheTtlMs: 999 }), /cacheTtlMs/)
  assert.throws(() => resolveOptions({ coldMinTokens: -1 }), /coldMinTokens/)
+ assert.throws(() => resolveOptions({ preCompactNudge: 'no' }), /preCompactNudge/)
 })
 test('manual and automatic paths share a reversible instance-only summary hook', async () => {
  const { instance, scopes, attached, agent, engine } = fixture()
@@ -134,4 +137,19 @@ test('scope creation failure cannot strand a summary wrapper on the official ins
  assert.equal(Object.hasOwn(engine,'summarize'),false)
  assert.equal(instance.has(agent),false)
  await instance.dispose()
+})
+
+test('pre-compaction hook defers pressure compaction and stays reversible', async () => {
+ const { instance, agent, engine } = fixture()
+ const seen = []
+ const preCompact = async (owner, target, trigger) => { seen.push([owner, target, trigger]); return trigger === 'pressure' }
+ assert.equal(instance.attach({}, agent, engine, resolveOptions(), preCompact), true)
+ assert.equal(await engine.compactIfNeeded(agent, 'pressure'), null)
+ assert.deepEqual(await engine.compactIfNeeded(agent, 'context-overflow'), { compact: true, agent, trigger: 'context-overflow', signal: undefined })
+ assert.equal(seen.length, 2)
+ const outsider = { ctx: { key: {} } }
+ assert.deepEqual(await engine.compactIfNeeded(outsider, 'pressure'), { compact: true, agent: outsider, trigger: 'pressure', signal: undefined })
+ await instance.detach(agent)
+ assert.equal(Object.getOwnPropertyDescriptor(engine, 'compactIfNeeded'), undefined)
+ assert.deepEqual(await engine.compactIfNeeded(agent, 'pressure'), { compact: true, agent, trigger: 'pressure', signal: undefined })
 })

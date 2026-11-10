@@ -22,7 +22,7 @@ The plugin reads the session events and the task ledger that already exist at th
 
 1. **Locate** — the host entry looks up the `compaction` service an agent actually uses, instead of replacing configuration by preset name.
 2. **Admit** — only instances whose prototype is exactly the official `BasicCompactionEngine.prototype` and which have no instance-level `summarize` are accepted. Custom backends, subclasses, and already-decorated implementations keep their own behavior.
-3. **Decorate** — install a reversible `summarize()` wrapper on that instance; the official prototype is not modified and the engine is not rebuilt.
+3. **Decorate** — install a reversible `summarize()` wrapper and a `compactIfNeeded()` pre-compaction gate on that instance; the official prototype is not modified and the engine is not rebuilt.
 4. **Route** — the wrapper dispatches per owner agent: registered agents get the code-generated handoff, other owners fall back to the original method.
 5. **Display** — the browser side renders a handoff card only for messages sourced from `compact-checkpoint` that carry the plugin's handoff heading. Official compaction rows are not hidden.
 6. **Restore** — disabling or uninstalling the plugin restores the decorated method and releases the tools, listeners, and keepalive resources held in the agent scope. Already-committed compaction history is not rolled back.
@@ -33,6 +33,7 @@ The plugin reads the session events and the task ledger that already exist at th
 - **Task ledger** — records progress, next step, acceptance conditions, and evidence; before a handoff the plugin tries to snapshot unrecorded actions.
 - **History search** — searches host session events or reads them by number, including compacted events that are still in the log.
 - **Cache observation** — estimates hot/cold from provider usage plus local TTL assumptions; cold-cache switching and paid keepalive are both off by default and can be enabled on the plugin detail page.
+- **Pre-compaction nudge** — when pressure compaction reaches the threshold and the ledger is not fresh, defer one step and inject a bookkeeping reminder; one deferral per window, and the next step boundary compacts as usual. The nudge makes no model request and does not change the official threshold; it can be turned off on the plugin detail page.
 - **Reversible integration** — see items 3 and 6 above; no preset declaration is rewritten.
 
 Automatic triggering, thresholds, recent-history retention, transactions, and `/compact` remain owned by the official Basic backend. The handoff generator makes no model request, but that does not mean a session produces no model requests or cost, nor that every compaction replaces the entire history.
@@ -110,6 +111,7 @@ Location: **Settings → Plugins → this plugin's detail page**. The form is gr
 | `enabled` | `true` | Enables instance adaptation and agent helper features |
 | `handoffTokens` | `20000` | Estimated token budget for the handoff, integer 1000–64000; not a hard output cap |
 | `budgetContext` | `false` | Injects budget and cache diagnostics into the model context |
+| `preCompactNudge` | `true` | Pre-compaction bookkeeping nudge: defer one step when the threshold is reached and the ledger is stale; once per window |
 | `keepalive` | `false` | Idle cache keepalive; sends real model requests and consumes budget |
 | `cacheTtlMs` | `3600000` | Assumed cache TTL in ms; past it the cache counts as expired |
 | `keepaliveAfterMs` | `3120000` | Idle time before keepalive starts (ms) |

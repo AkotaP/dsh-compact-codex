@@ -14,6 +14,7 @@
 - 插件详情页配置表单，保存 `options`：`enabled`、`handoffTokens`、`keepalive`、`coldSwitch`、`budgetContext`。
 - 交接卡片客户端显示：仅对来源为 `compact-checkpoint` 且含插件交接标题的消息渲染，不隐藏官方压缩行。
 - `scripts/profile.mjs` 安装器：备份 profile、写入依赖、同步依赖成功后再启用 bundle；支持 dry run 与 uninstall。
+- 压前闸：压力压缩到达阈值且账本不新时推迟一步，并在同一步注入一条记账提醒；一个窗口只推迟一次，溢出路径不推迟；默认开启，可在插件详情页关闭。
 - 插件详情页开放缓存参数：`cacheTtlMs`、`keepaliveAfterMs`、`minCacheReadTokens`、`idleKeepaliveBudget`、`maxConsecutiveFailures`、`coldMinTokens`、`checkEveryMs`。
 
 ### Changed
