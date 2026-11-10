@@ -1,8 +1,8 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, rmSync, writeFileSync, readdirSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, readdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { __test, attachCodexFeatures, buildHandoffOptions, createPreCompactGate } from '../lib/index.js'
 import { initialCacheState, noteRequest, decideKeepalive } from '../lib/cache.js'
 
@@ -241,6 +241,84 @@ test('ledger_append propagates disk errors and never reports a false successful 
  await assert.rejects(ctx.toolsMap.get('ledger_append').execute({ task_id: 't', title: 'task', status: 'blocked', text: 'record' }, { agent: agentOf(session) }), /账本写入失败/)
  assert.deepEqual(__test.readLedger(session), [])
  assert.deepEqual(readdirSync(home), ['not-a-directory'])
+})
+
+test('ledger read failure is surfaced instead of wiping the file', async (t) => {
+ homeOf(t)
+ const ctx = context(t), session = sessionOf()
+ const ledgerPath = join(process.env.DSH_HOME, 'dsh-compact-codex', 'sessions', session.id, 'ledger.jsonl')
+ mkdirSync(ledgerPath, { recursive: true })
+ __test.registerLedgerTools(ctx)
+ assert.throws(() => __test.readLedger(session), /账本读取失败/)
+ assert.match(__test.ledgerGate(session), /账本读不出来/)
+ await assert.rejects(ctx.toolsMap.get('ledger_append').execute({ task_id: 't', title: 'task', status: 'blocked', text: 'record' }, { agent: agentOf(session) }), /账本读取失败/)
+ assert.deepEqual(readdirSync(ledgerPath), [], 'the unreadable ledger path is left untouched')
+})
+
+test('fully corrupt ledger is refused instead of being overwritten', async (t) => {
+ homeOf(t)
+ const ctx = context(t), session = sessionOf()
+ const ledgerPath = join(process.env.DSH_HOME, 'dsh-compact-codex', 'sessions', session.id, 'ledger.jsonl')
+ mkdirSync(dirname(ledgerPath), { recursive: true })
+ writeFileSync(ledgerPath, 'not json\n{broken\n')
+ __test.registerLedgerTools(ctx)
+ await assert.rejects(ctx.toolsMap.get('ledger_append').execute({ task_id: 't', title: 'task', status: 'blocked', text: 'record' }, { agent: agentOf(session) }), /账本文件损坏/)
+ assert.equal(readFileSync(ledgerPath, 'utf8'), 'not json\n{broken\n')
+})
+
+test('handoff surfaces an unreadable ledger instead of pretending it is empty', (t) => {
+ homeOf(t)
+ const session = sessionOf()
+ mkdirSync(join(process.env.DSH_HOME, 'dsh-compact-codex', 'sessions', session.id, 'ledger.jsonl'), { recursive: true })
+ assert.match(__test.ledgerHomeOf(session, { maxTokens: 2000 }), /账本读取失败/)
+})
+
+test('anchor paths resolve against the session working directory', async (t) => {
+ homeOf(t)
+ const workspace = mkdtempSync(join(tmpdir(), 'codex-anchor-'))
+ t.after(() => rmSync(workspace, { recursive: true, force: true }))
+ writeFileSync(join(workspace, 'target.txt'), 'alpha\nneedle-here\nomega\n')
+ const ctx = context(t), session = sessionOf(), agent = agentOf(session)
+ session.header = { cwd: workspace }
+ __test.registerLedgerTools(ctx)
+ const result = await ctx.toolsMap.get('ledger_append').execute({
+  task_id: 't', title: 'task', status: 'in_progress', text: 'record', next_step: 'carry on',
+  anchors: [{ path: 'target.txt', match: 'needle-here', note: 'where' }]
+ }, { agent })
+ assert.match(result.detail, /已记录/)
+ assert.deepEqual(__test.readLedger(session)[0].anchors, [{ path: 'target.txt', match: 'needle-here', note: 'where' }])
+})
+
+test('anchor paths prefer the live working directory over the creation header', async (t) => {
+ homeOf(t)
+ const live = mkdtempSync(join(tmpdir(), 'codex-live-'))
+ const headerDir = mkdtempSync(join(tmpdir(), 'codex-header-'))
+ t.after(() => {
+  rmSync(live, { recursive: true, force: true })
+  rmSync(headerDir, { recursive: true, force: true })
+ })
+ writeFileSync(join(live, 'live.txt'), 'live-needle\n')
+ const ctx = context(t), session = sessionOf(), agent = agentOf(session)
+ session.header = { cwd: headerDir }
+ ctx.get = (name) => (name === 'workingDirectory' ? { ensure: async () => live } : undefined)
+ __test.registerLedgerTools(ctx)
+ const result = await ctx.toolsMap.get('ledger_append').execute({
+  task_id: 't', title: 'task', status: 'in_progress', text: 'record', next_step: 'carry on',
+  anchors: [{ path: 'live.txt', match: 'live-needle', note: 'where' }]
+ }, { agent })
+ assert.match(result.detail, /已记录/)
+})
+
+test('pre-compact gate skips deferral when the nudged step would already overflow', async (t) => {
+ homeOf(t)
+ const config = { thresholdRatio: 0.8, headroomTokens: 0 }
+ const agentAt = (id) => ({ session: { id, requestHeader: () => ({ config: { provider: 'p', model: 'm', maxTokens: 1000 } }) } })
+ const gateAt = (used) => createPreCompactGate({
+  llm: { resolveModelInfo: async () => ({ context: { contextWindow: 100_000 }, defaultMaxTokens: 1000 }) },
+  tokenMeter: { measure: () => ({ totalTokens: used }) }
+ })
+ assert.equal(await gateAt(94_000)(agentAt('room-left'), config, 'pressure', undefined), true)
+ assert.equal(await gateAt(99_000)(agentAt('no-room'), config, 'pressure', undefined), false)
 })
 
 test('new_context consumes once, forwards signal, respects reject and skips downstream reset', async (t) => {

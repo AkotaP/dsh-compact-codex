@@ -4,6 +4,29 @@
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。0.x / 1.x 阶段的接口仍可能调整，以 README 描述的行为为准。
 
+## [Unreleased]
+
+## [1.3.1] - 2026-11-10
+
+`1.3.0` 的压前记账提醒与开关此前未单独打版本号，本次在 1.3.1 一并发布，并修复账本与压前推迟的可靠性问题。
+
+### Added
+
+- 压前记账提醒：在官方实例上可逆装饰 `compactIfNeeded()` 的压前闸；压力压缩到达阈值且账本不新时先推迟一步，并在同一步注入记账提醒。一个窗口只推迟一次，溢出路径不推迟；新增 `preCompactNudge` 选项（默认开启，可在插件详情页关闭）。
+
+### Changed
+
+- 精简中英文 README、原理说明与内部文档，明确换窗行为、信息截断、安装限制和卸载边界。
+- 插件详情页改用直白的中英文说明，区分交接长度预算与换窗阈值，说明缓存有效期仅为估算，保活的输入和缓存也可能计费。
+- 将 `checkEveryMs` 移入缓存保活分组：该参数只控制保活定时检查，不控制下一步前的自动换窗检查。
+- 保留配置键、默认值和压缩逻辑，补充 UI 文案与设置分组回归测试。
+
+### Fixed
+
+- 账本读取失败不再被当成空账本：只有 `ENOENT` / `ENOTDIR` 视为缺失，其它读取错误与「文件非空但一行都解析不出」都会报错，追加、换窗和交接不再把旧记录整本覆盖或伪装成没有账本。
+- 账本锚点的相对路径改按会话当前工作目录解析（优先宿主工作目录服务，取不到时用会话头的创建目录），不再依赖宿主进程工作目录；工具说明与报错文案同步写明。
+- 压前推迟增加余量护栏：用量加预留输出贴到窗口容量时不再推迟，避免被推迟的那一步请求直接溢出、记账提醒也送不到。
+
 ## [1.2.0] - 2026-11-08
 
 最小侵入重写：从“替换压缩服务 + 覆写 preset”改为“只装饰官方实例的 `summarize()`”。
@@ -14,7 +37,6 @@
 - 插件详情页配置表单，保存 `options`：`enabled`、`handoffTokens`、`keepalive`、`coldSwitch`、`budgetContext`。
 - 交接卡片客户端显示：仅对来源为 `compact-checkpoint` 且含插件交接标题的消息渲染，不隐藏官方压缩行。
 - `scripts/profile.mjs` 安装器：备份 profile、写入依赖、同步依赖成功后再启用 bundle；支持 dry run 与 uninstall。
-- 压前闸：压力压缩到达阈值且账本不新时推迟一步，并在同一步注入一条记账提醒；一个窗口只推迟一次，溢出路径不推迟；默认开启，可在插件详情页关闭。
 - 插件详情页开放缓存参数：`cacheTtlMs`、`keepaliveAfterMs`、`minCacheReadTokens`、`idleKeepaliveBudget`、`maxConsecutiveFailures`、`coldMinTokens`、`checkEveryMs`。
 
 ### Changed

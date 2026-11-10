@@ -198,14 +198,30 @@ test('configuration form groups fields into cards with per-field descriptions', 
   const nodes = h.nodes()
   assert.equal(nodes.filter(n => n.type === 'section' && n.props.className === 'ccc_card').length, 4)
   assert.equal(nodes.filter(n => n.type === 'p' && n.props.className === 'ccc_desc').length, Object.keys(defaults).length)
-  assert.match(h.text(), /两个自动行为默认都关闭/)
+  assert.match(h.text(), /缓存保活和过期后自动换窗默认关闭/)
   assert.match(h.text(), /基础/)
   assert.match(h.text(), /缓存保活/)
   h.dispose()
   const e = harness({ language: 'en' }); e.page()
-  assert.match(e.text(), /Both automatic behaviors are off by default/)
+  assert.match(e.text(), /Keepalive and cache-expiry compaction are off by default/)
   assert.match(e.text(), /Diagnostics/)
   e.dispose()
+})
+
+test('bilingual help distinguishes estimated expiry, paid input and the keepalive timer', () => {
+  for (const language of ['zh', 'en']) {
+    const h = harness({ language }); h.page()
+    const copy = h.dictionaries.get('compact-codex')[language]
+    assert.match(copy.desc_keepalive, language === 'zh' ? /输入和缓存也可能计费/ : /input and cache tokens may also be billed/)
+    assert.match(copy.desc_cacheTtlMs, language === 'zh' ? /不是服务商保证/ : /not a provider guarantee/)
+    assert.match(copy.desc_coldSwitch, language === 'zh' ? /账本检查通过/ : /ledger check passes/)
+    assert.match(copy.desc_handoffTokens, language === 'zh' ? /不是换窗触发阈值/ : /not the threshold/)
+    assert.match(copy.cacheHint, language === 'zh' ? /不会恢复出厂默认值/ : /not factory defaults/)
+    const cards = h.nodes().filter(n => n.type === 'section')
+    assert.match(h.text(cards[1]), language === 'zh' ? /保活检查间隔/ : /Keepalive check interval/)
+    assert.doesNotMatch(h.text(cards[2]), language === 'zh' ? /保活检查间隔/ : /Keepalive check interval/)
+    h.dispose()
+  }
 })
 
 test('defaults, external subscriptions, service removal and bilingual presentation remain consistent', () => {

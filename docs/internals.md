@@ -1,54 +1,49 @@
 # 实现说明
 
-本文对应 1.2 的宿主适配流程。安装命令与默认配置见 [README](<../README.md>)，运行机制见 [工作原理](<how-it-works.md>)。
+本文说明 1.2 起的宿主接入方式。安装与默认配置见 [README](<../README.md>)，交接与缓存行为见[工作原理](<how-it-works.md>)。
 
 ## 入口与职责
 
 | 文件 | 职责 |
 | --- | --- |
-| [plugin.js](<../lib/plugin.js>) | 宿主入口、volatile 配置与 agent 生命周期协调 |
-| [integration.js](<../lib/integration.js>) | 官方实例判定、可逆方法装饰与 agent scope 释放 |
-| [index.js](<../lib/index.js>) | 交接生成、四个工具、预算与缓存辅助功能；保留显式引擎导出 |
+| [plugin.js](<../lib/plugin.js>) | 宿主入口、可动态更新的 volatile 配置与 agent 生命周期 |
+| [integration.js](<../lib/integration.js>) | 判定官方实例、包装与恢复方法、释放 agent 作用域 |
+| [index.js](<../lib/index.js>) | 生成交接、注册四个工具、提供预算和缓存功能；保留显式引擎导出 |
 | [client.js](<../lib/client.js>) | 交接卡片与插件详情配置表单 |
-| [cordis.patch.yml](<../cordis.patch.yml>) | 仅插入宿主 `compact-codex` 行 |
+| [cordis.patch.yml](<../cordis.patch.yml>) | 只插入宿主 `compact-codex` 行 |
 | [profile.mjs](<../scripts/profile.mjs>) | profile 安装、卸载、路径选择与备份 |
 
-默认包入口是宿主插件，不是压缩引擎类。兼容类 `CodexCompactionEngine` 仍由 `dsh-compact-codex/engine` 导出，旧 `dsh-compact-codex/preset` 入口也保留；显式选择这些入口不等于使用默认最小侵入流程。
+默认包入口是宿主插件，不是压缩引擎类。兼容类 `CodexCompactionEngine` 仍由 `dsh-compact-codex/engine` 导出，旧 `dsh-compact-codex/preset` 入口也保留；显式选择这些入口不等于使用默认接入流程。
 
-## 实际后端与实例边界
+## 服务查询与实例边界
 
-宿主优先通过 `agentPresets.serviceFor(agent, "compaction")` 查询 agent 已保留的实际服务，必要时回退 `agent.ctx.get("compaction")`。这与直接读取某个 preset 定义不同，也避免在顶层重复挂载另一个后端。
+宿主优先通过 `agentPresets.serviceFor(agent, "compaction")` 查询 agent 实际使用的服务，必要时回退到 `agent.ctx.get("compaction")`。不直接读取 preset 定义，也不在顶层再挂载一个后端。
 
-`serviceFor()` 每次查询可能返回新的 Cordis use-site traceProxy，不能直接将返回对象用作稳定身份。接入先通过公开的 `Symbol.for("cordis.original")` 解包，取得稳定的原始服务实例；后端记录 Map 以该 canonical raw 实例为键，实例比较与准入检查也使用此身份，避免共享服务的多个 agent 被重复装饰或每步重新识别失败。
+`serviceFor()` 可能每次返回不同的 Cordis 代理。插件通过公开的 `Symbol.for("cordis.original")` 取得原始服务实例，以该实例作为记录 Map 的键，并用于比较与接入判定。这样多个 agent 共享服务时不会因代理身份变化而重复包装。
 
-实例准入条件包括：
+接入条件：
 
 - `Object.getPrototypeOf(engine) === BasicCompactionEngine.prototype`。
-- 未存在实例自身的 `summarize` 属性描述符，继承的方法可调用；`compactIfNeeded` 同理，仅在该实例没有自有实现时包装。
-- agent 有可用上下文与 scope，且插件仍启用。
+- 实例没有自有 `summarize` 属性，且继承的 `summarize` 可调用。
+- agent 有可用的上下文与 scope，插件仍启用。
 
-不使用宽泛 `instanceof` 接管自定义子类，不写官方 prototype，不替换 `ctx.compaction` 服务，也不重写任何 preset 声明。实例级装饰只用于两个钩子：`summarize()` 生成交接，`compactIfNeeded()` 作压前闸。官方 Basic 的自动触发、阈值、保留策略、事务和 `/compact` 均保持。旧文档所述“必须整份搬运 preset”不适用于此架构。
+符合条件后包装 `summarize()`；只有在实例没有自有 `compactIfNeeded` 属性、且继承方法可调用时，才包装它提供压前提醒。不用宽泛的 `instanceof` 接管子类，不改官方 prototype，不替换 `ctx.compaction`，也不覆写 preset。
 
-## 可逆装饰与作用域
+官方 Basic 仍决定自动触发、阈值、保留策略、事务与 `/compact` 流程。默认宿主接入会在符合条件的压力路径中推迟一次步边界（余量不足时不推迟），不能描述成“压力流程完全不变”；旧文档中的“整份搬运 preset”也不适用于此架构。
 
-每个后端实例保存原 `summarize`、原 `compactIfNeeded` 与本插件包装函数，每个 agent 保存配置、实例记录和独立作用域。包装按 owner 查找成员，未登记或停用时调用原方法；已登记时调用代码交接生成器。多个 agent 共用一个实例时分别追踪成员，不提前移除仍有成员使用的包装。
+## 方法恢复与作用域
 
-辅助功能使用：
+每个后端实例记录原方法与本插件包装函数，每个 agent 记录配置、后端和独立作用域。`summarize()` 按 owner 查询 agent；未登记或已停用时调用原方法，已登记时生成交接。多个 agent 共用实例时分别记录成员，最后一个成员退出才恢复方法。
 
-```js
-const scope = createScope(hostCtx, scopeOf(agent.ctx))
-attachCodexFeatures(scope.ctx, engine, engine.config, options)
-```
+辅助功能通过 `createScope(hostCtx, scopeOf(agent.ctx))` 建立作用域，再由 `attachCodexFeatures()` 注册。作用域受宿主插件生命周期管理，同时处于该 agent 的隔离范围。工具和监听器不能只注册在宿主根上下文，否则可能对错误的 agent 生效或在卸载后残留。
 
-作用域既受宿主插件生命周期管理，又落在 agent 的隔离范围中。工具与监听器不能仅在宿主根上下文注册，否则可能对错误的 agent 生效或在卸载后残留。
+agent 释放、后端变化、配置禁用或插件卸载时，移除对应成员并 `dispose()` 其 scope，释放工具、监听器、计时器并取消在飞保活请求。只恢复仍指向本插件包装的属性，避免覆盖其他插件后续的改动。完整卸载先停止接入并恢复方法，再等待已排队工作结束；它不回滚已提交的压缩或已发送请求的费用。
 
-agent 释放、后端变化、配置禁用或插件卸载时，应移除成员并 `dispose()` 对应 scope。最后一个成员退出才恢复该实例的方法；仅当当前属性仍是本插件包装时恢复，避免覆盖后来由其他插件安装的方法。完整卸载先停止适配并恢复包装，再等待已排队工作结束。scope 清理需要释放监听器、工具注册和计时器，并取消在飞保活请求。
-
-配置或生命周期处理通过队列串行协调，不能仅凭一次 `agent/created` 事件认定后续后端永远不变。步边界会重新核对服务实例。
+配置与生命周期操作串行排队；每次步边界重新检查服务实例，不能假设 `agent/created` 后后端不再变化。
 
 ## 配置契约
 
-宿主 `Config` 仅声明一个 volatile `options` 对象：
+宿主 `Config` 只声明一个 volatile `options` 对象，默认值如下：
 
 ```json
 {
@@ -68,38 +63,46 @@ agent 释放、后端变化、配置禁用或插件卸载时，应移除成员�
 }
 ```
 
-`handoffTokens` 是 1000–64000 的安全整数；其余数值字段按各自下限校验。`keepalive` 与 `coldSwitch` 默认关闭。详情页通过包名 `dsh-compact-codex` 注册 `plugins.bundle.config`，通过行 id `compact-codex` 取得配置表单，使用 `form.set("options", {...})` 保存整个对象。只读、pending、表单缺失和保存异常均需处理；缺少 `configForms` 不得阻止交接渲染。
+所有数值必须为安全整数。`handoffTokens` 范围为 1000–64000，是估算交接长度，不是压缩触发阈值，也不是严格输出上限。`cacheTtlMs`、`keepaliveAfterMs`、`checkEveryMs` 下限为 1000，`maxConsecutiveFailures` 下限为 1，其余缓存数值下限为 0。
 
-宿主从 `apply(ctx, config)` 第二参数读取配置，volatile 值按引用读取。收到更新后重新释放并适配现有 agent；`enabled: false` 恢复默认行为，但不会取消已经提交的压缩事务或恢复旧表面。
+`keepalive` 与 `coldSwitch` 默认关闭，共用 `cacheTtlMs` 的有效期假设。`checkEveryMs` 只控制保活后台检查，不控制步边界的冷缓存换窗。`keepaliveAfterMs >= cacheTtlMs` 或 `idleKeepaliveBudget: 0` 时不发送保活。保活设 `maxTokens: 1` 限制输出，但输入和缓存仍可能计费，不保证实际命中。
 
-官方 Basic 的阈值和保留参数继续在官方服务上配置。1.1 及更早版本使用的 `preset-config.json` 已从仓库移除，不自动迁移；旧引擎字段仅适用于显式配置兼容引擎的场景。1.2 起不再提供 preset 同步脚本。
+详情页以包名 `dsh-compact-codex` 注册 `plugins.bundle.config`，以行 id `compact-codex` 取得表单，通过 `form.set("options", {...})` 保存整个对象，并保留当前配置中界面不认识的字段。只读、等待、表单缺失和保存异常需显示状态；缺少 `configForms` 不应阻止交接渲染。“撤销未保存修改”恢复已保存值，不是恢复默认值。
 
-## 依赖解析与安装事务
+宿主从 `apply(ctx, config)` 第二参数读取配置；volatile 字段通过引用取得当前值。更新后释放并重新接入现有 agent。`enabled: false` 恢复原行为，不会取消已提交的压缩事务，也不将被压缩原文重新放回当前模型上下文。
 
-[包清单](<../package.json>) 声明宿主运行时 peers。生产加载依赖 DSH `0.2.2-rc.1` 的 peer resolver 解析官方包，包括 asar 内依赖；不建立运行时 Junction，也不通过下载另一份官方引擎来满足类身份判断。版本升级后需复核 resolver、保留组合查询和 scope API。
+官方 Basic 的阈值和保留参数仍在官方服务上配置。1.1 及更早版本使用的 `preset-config.json` 已移除，不自动迁移；旧引擎字段仅适用于显式配置兼容引擎。1.2 起不提供 preset 同步脚本。
 
-运行安装或卸载脚本前，必须停止使用目标 profile 的 DSH，并确保没有其他 profile 编辑或插件管理操作；脚本结束后再启动 DSH。dry run 的 `requiresExclusiveProfileAccess: true` 是此操作前提的报告，不是已经取得独占访问的证明。
+## 依赖解析与安装边界
 
-安装先备份并写入依赖，执行 pnpm，成功后才启用 bundle。安装器用 `wx` 创建自有锁，仅防止本安装器的并行操作，不与 DSH 或编辑器共享写锁。写回前的原文比较和后续 rename 之间仍有竞态，只提供 best-effort stale 检查，不是面向不配合写入者的原子 CAS，不能承诺拒绝所有并发覆盖。目标 profile 清单或 lockfile 为符号链接或非普通文件时拒绝写入。pnpm 失败时尝试恢复原清单，但不保证依赖目录与 lockfile 的影响全部回滚。
+[包清单](<../package.json>) 声明宿主运行时 peer 依赖。生产加载使用 DSH `0.2.2-rc.1` 起的 peer 解析机制，包括 asar 内依赖；不创建运行时联接，也不下载另一份官方引擎来满足类身份判断。DSH 升级后需复核依赖解析、实际服务查询和 scope API。
 
-上述独占访问要求针对脚本写 profile，不限制插件正常运行、配置更新，以及宿主内禁用或卸载时的方法恢复与作用域资源释放。
+安装或卸载脚本要求先完全退出使用目标 profile 的 DSH，并停止其他 profile 编辑或插件管理操作；脚本结束后再启动。dry run 的 `requiresExclusiveProfileAccess: true` 是操作前提，不表示已取得独占访问。
 
-`--skip-pnpm` 只准备新安装依赖声明，不激活尚未启用的 bundle。卸载则先禁用 bundle、移除依赖，再清理依赖；清理失败不会重新启用。显式 `--profile-dir` 优先，否则尊重 `DSH_PROFILE_DIR`；显式 home/profile 覆盖环境路径组合。
+安装先备份并写入依赖声明，执行 pnpm，成功后启用 bundle。安装器以 `wx` 创建自有锁，只防止本安装器并行运行，不阻止 DSH 或编辑器写入。写回前比较原文，但比较与重命名之间仍有竞态，不是原子比较并写入，不能保证拒绝所有并发覆盖。profile 清单或 lockfile 为符号链接或非普通文件时拒绝写入。pnpm 失败时尝试恢复原清单，不保证撤销依赖目录与 lockfile 的全部改动。
 
-脚本不编辑 profile patch 中的自定义配置，不删除历史日志、账本、诊断文件或备份。GUI 保存的配置可能留下针对 `compact-codex` 的无效 patch 行；旧版本手工写入的 preset 覆盖和运行时联接也不会自动清理。卸载不是零残留承诺，更不是已压缩历史的反向恢复。
+`--skip-pnpm` 跳过依赖同步。新安装只写依赖声明、不启用 bundle；已启用的 bundle 不因此禁用。正常卸载先禁用 bundle、移除依赖，再同步依赖，清理失败不重新启用；跳过 pnpm 则仍待清理依赖。路径优先级为：显式 `--profile-dir`；没有显式 `--home` 或 `--profile` 时使用 `DSH_PROFILE_DIR`；其余情况组合 home 与 profile 参数或环境变量。
 
-## turn 内换窗
+独占要求只针对脚本写 profile，不限制正常运行、配置更新或宿主内禁用与卸载。`link:` 不是即时生效保证；源码改动需由宿主加载，客户端是否自动更新也需验证。
 
-`new_context` 工具只登记请求，不能在工具 handler 内调用 `compactNow()` 抢占正在运行的 turn。后续 `agent/pre-step` 必须先 `next()`，步骤被拒时保留请求，取消时停止消费。
+脚本不编辑 profile patch 的自定义配置，不删除历史日志、账本、诊断文件或备份。GUI 保存的配置可能留下针对 `compact-codex` 的无效 patch 行；旧版手工 preset 覆盖和运行时联接也不自动清理。卸载既不保证零残留，也不撤销已提交的压缩历史。
 
-消费前比较登记时的最后压缩编号，避免下游自动压缩后再压一次；同时复查账本门槛和 signal。区间跳过系统头，结尾取当前 surface 末项，再调用 `compactRegion(..., agent, signal)`。边界选择不是绕过官方工具配对和事务校验的理由。
+## turn 内换窗与压力路径
 
-官方压力路径不被适配器的账本条件拦截。显式兼容引擎的 `compactIfNeeded()` 覆写不得被误写为默认宿主行为。
+`new_context` 只登记请求，不在工具 handler 内调用 `compactNow()` 抢占当前 turn。后续 `agent/pre-step` 先调用 `next()`；步骤被拒时保留请求，取消时停止处理。
+
+处理前比较登记时的最后压缩编号，避免下游已压缩后再次压缩；同时复查账本条件与 signal。区间跳过系统头，结尾取当前模型可见历史末项，再调用 `compactRegion(..., agent, signal)`。区间选择不能绕过官方工具配对与事务校验。
+
+`preCompactNudge` 通过默认实例的 `compactIfNeeded()` 包装实现，不是仅存在于兼容引擎的行为。只对 `pressure` 判定，且需取得有效模型容量、用量和阈值；账本为空或检查未通过、且推迟一步后仍有余量时，每窗口最多推迟一次，并在下游允许的步骤中注入记账提醒；余量不足时不推迟，压缩照常执行且产物仍是交接信息，不退回原生摘要。之后不再因该提醒推迟，溢出路径不推迟，也不保证模型按提醒记账。`budgetContext` 只控制数字诊断，不能代替这项开关。
+
+主动换窗的账本检查不会持续阻止官方压力压缩。冷缓存换窗也检查账本，且仅在下游未压缩、步骤允许执行、缓存观测可用、估计过期及上下文达标时触发。
 
 ## 验证与诊断
 
-运行 `npm test` 使用 [测试注册器](<../test/support/register-runtime.mjs>) 显式把运行时导入映射到离线 stub。stub 验证协议和分支行为，不证明真实 DSH 对象、profile 重组、浏览器槽位或 provider 计费行为正确。测试不得依赖安装脚本生成运行时联接。
+`npm test` 通过[测试注册器](<../test/support/register-runtime.mjs>)将运行时导入映射到离线 stub。stub 验证协议和分支，不证明真实 DSH 对象、profile 重组、浏览器槽位或 provider 计费行为正确。测试不应依赖安装脚本创建运行时联接。
 
-发布前应分别记录：离线测试结果、真实宿主隔离 smoke、获准后的实际 profile 安装、浏览器配置保存和交接渲染验收。本次文档更新不代表已在当前 GUI 生效；未实际执行的检查不得标为通过，也不列未经确认的测试数量。
+账本锚点校验按会话当前工作目录（优先宿主的工作目录服务，取不到时用会话头里的创建目录）解析 `anchors.path` 的相对路径，绝对路径原样使用；只有会话头没有工作目录时才以宿主进程工作目录为基准。`match` 需在文件中唯一出现。成功工具结果编号只是账本完成状态的校验条件，不自动证明任务整体完成。
 
-排查压缩失败应查看 `compaction/end` 的错误信息，不能只依据 `/compact` 的兜底摘要失败文案。工具注册失败日志缺席也不能单独证明功能可用，应检查实际注册与调用结果。交接、自动快照和账本均不构成信息无损保证；历史回查还依赖宿主日志保留与可读性。
+发布前需分别记录离线测试、真实宿主隔离 smoke、获准后的实际 profile 安装、浏览器配置保存和交接渲染验收。文档修改或已有截图不表示当前 GUI 已验证；未执行的检查不能标为通过。
+
+排查压缩失败需查看 `compaction/end` 的错误信息，不能只依据 `/compact` 的通用摘要失败文案。没有工具注册失败日志也不能证明功能可用，应检查实际注册和调用结果。交接有预算与裁剪，账本依赖记录质量和存储；插件自身不删除日志，但历史回查仍依赖宿主保留原事件且能读取，不能保证信息无损或永久可查。
