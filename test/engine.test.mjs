@@ -390,6 +390,16 @@ test('budget callback does not read or inject after disposal during next or mode
  }
 })
 
+test('ledger nudge asks for entries and keeps the turn going without mentioning new_context', () => {
+  const text = __test.LEDGER_SOON_REMINDER_TEXT
+  assert.match(text, /call ledger_append with the task id/)
+  assert.match(text, /keep working on the task/)
+  // 推迟只是把压缩让到下一个步边界；写死「这一步之后窗口就重置」是错的时间线，
+  // 提 new_context 又会把模型推去再换一次窗。
+  assert.doesNotMatch(text, /new_context/)
+  assert.doesNotMatch(text, /resets by itself right after this step/)
+})
+
 test('pre-compact gate defers one pressure compaction per window and ignores other triggers', async (t) => {
   homeOf(t)
   const config = { thresholdRatio: 0.8, headroomTokens: 0 }
