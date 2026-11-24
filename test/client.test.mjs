@@ -91,7 +91,7 @@ function harness({ snapshot = { status: 'ready', writable: true, value: { option
   return { plugin, ctx, slots, definitions, styles, writes, dictionaries, form, publish, page, render, renderComponent, renderNode, nodes, text, sidebar: sidebarRight, tabs, remote, events, sessions, setResult(value) { result = value }, enableService(name = 'configForms') { optionalNames.get(name)?.() }, disableService() { for (const off of [...optionalDisposers]) off() }, subscriptionCount: () => listeners.size, dispose() { for (const hook of hooks) hook?.off?.(); for (const fn of effects.reverse()) fn() }, input(name) { return nodes().find(n => n.type === 'input' && n.props.name === name) }, button(action) { return nodes().find(n => n.type === 'button' && n.props['data-action'] === action) } }
 }
 
-const event = (text, source = 'compact-checkpoint') => ({ type: 'user/message', seq: 12, data: { source: { kind: source }, content: [{ type: 'text', text }] } })
+const event = (text, source = 'compact-checkpoint', compactionId = 'c-12') => ({ type: 'user/message', seq: 12, data: { source: { kind: source, ...(compactionId === undefined ? {} : { compactionId }) }, content: [{ type: 'text', text }] } })
 const handoff = 'Earlier context.\n<compacted-summary>\n# 上下文交接\n## 最近的用户请求\n- [#11] finish work\n</compacted-summary>'
 
 test('only plugin checkpoints claim the chat event; generic/user/spoofed checkpoints remain untouched', () => {
@@ -299,7 +299,7 @@ test('handoff card opens the list panel focused on that entry', () => {
   assert.equal(prevented, true)
   assert.equal(stopped, true)
   // 与侧栏引导页那一行同一种标签：打开列表面板，并带上这一条的事件编号。
-  assert.deepEqual(h.sidebar.opened.map(v => ({ kind: v.kind, focus: v.content.focusSeq, key: v.options.key })), [{ kind: 'compact-codex-handoffs', focus: 12, key: 'compact-codex:handoffs' }])
+  assert.deepEqual(h.sidebar.opened.map(v => ({ kind: v.kind, focus: v.content.focus, key: v.options.key })), [{ kind: 'compact-codex-handoffs', focus: 'c-12', key: 'compact-codex:handoffs' }])
   h.dispose()
   const after = entry.Component({ node, t: h.ctx.locale.bind('compact-codex') })
   assert.equal(h.nodes(after).some(n => n.type === 'button'), false, 'service disposal removes the action')
@@ -311,19 +311,20 @@ test('opening the panel from a card pages back to that handoff and expands only 
   h.events.handler = async (query) => {
     if (query.beforeSeq === undefined) {
       return page([
-        { event: { type: 'compaction/summary', seq: 120, time: 2, data: { summary: [{ type: 'text', text: '# 上下文交接\n最近一次' }] } } }
+        { event: { type: 'compaction/summary', seq: 120, time: 2, data: { compactionId: 'c-120', summary: [{ type: 'text', text: '# 上下文交接\n最近一次' }] } } }
       ], true)
     }
     assert.equal(query.beforeSeq, 120)
     return page([
-      { event: { type: 'compaction/summary', seq: 40, time: 1, data: { summary: [{ type: 'text', text: '# 上下文交接\n要定位的那一条' }] } } }
+      { event: { type: 'compaction/summary', seq: 40, time: 1, data: { compactionId: 'c-40', summary: [{ type: 'text', text: '# 上下文交接\n要定位的那一条' }] } } }
     ], false)
   }
   const entry = h.slots.find(v => v.options.name === 'sidebar.right.pane.tab' && v.options.key === 'dsh-compact-codex/handoffs')
   const props = {
     ...entry.options.inject('session-1'),
     t: bindT(h),
-    useTabInfo: () => ({ tab: { navigation: { params: { focusSeq: 40 } } } })
+    // 检查点消息与摘要事件的编号不同，定位靠 compactionId。
+    useTabInfo: () => ({ tab: { navigation: { params: { focus: 'c-40' } } } })
   }
   h.renderComponent(entry.Component, props)
   await tick()

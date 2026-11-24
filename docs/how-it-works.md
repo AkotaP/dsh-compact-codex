@@ -81,7 +81,7 @@
 
 标签类型注册时的 `guide` 声明贡献右侧栏引导页里的「交接记录」一行，选中它就打开 `compact-codex-handoffs` 标签；入口不进入会话标题栏，也不依赖任何聊天卡片。面板的数据不走聊天装配结果，而是用 `remote.session.events`（`maxMessages` 分页、`beforeSeq` 往前翻）直接读宿主会话事件，从 `compaction/summary` 的 `summary` 文本块取交接正文，最新的排在前面；一页里可能没有交接，所以「载入更早的交接」按页继续。读失败时显示失败说明，不伪装成空列表。
 
-卡片上的「侧栏打开」调用 `sidebarRight.openContent('compact-codex-handoffs', { focusSeq }, { key })`，打开同一个面板并在 `tab.navigation.params` 里带上这一条的事件编号：面板从最新一页往前翻到它，展开这一条，其余条目保持收起；重复点击复用同一个标签。展开状态由组件自己维护（`open` + `onToggle`），不依赖浏览器保留的 DOM 状态。
+卡片上的「侧栏打开」调用 `sidebarRight.openContent('compact-codex-handoffs', { focus }, { key })`，打开同一个面板并在 `tab.navigation.params` 里带上这一条的身份：**`compactionId`**，不是检查点消息的编号——检查点（替换表面的 `user/message`）和摘要（`compaction/summary`）是两个不同的事件，编号各不相同；两者的共同身份是 `source.compactionId` 与 `data.compactionId`。面板从最新一页往前翻到匹配的摘要事件，展开这一条，其余条目保持收起；重复点击复用同一个标签。展开状态由组件自己维护（`open` + `onToggle`），不依赖浏览器保留的 DOM 状态。
 
 `sidebarRight`、`sidebarRightTabs`、`remote` 都是可选服务，缺席时对应的入口、按钮或面板不渲染，卡片仍按原样展开。样式、事件定义、标签类型、槽位与侧栏桥接随插件生命周期释放。客户端为手写浏览器 bundle，无额外构建步骤；是否自动加载更新仍取决于宿主热更新能力，不能据此保证保存即生效。
 

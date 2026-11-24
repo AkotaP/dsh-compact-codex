@@ -6,6 +6,12 @@
 
 ## [Unreleased]
 
+## [1.4.2] - 2026-11-24
+
+### Fixed
+
+- 修复卡片定位失效：检查点消息的编号和 `compaction/summary` 事件的编号不同，按消息编号永远匹配不到条目，面板会一直往前翻到上限也不展开。改为用两者共有的 `compactionId` 定位（`source.compactionId` ↔ `data.compactionId`），定位不到时按钮不渲染。
+
 ## [1.4.1] - 2026-11-24
 
 ### Changed
