@@ -284,7 +284,7 @@ test('each supported option is read from the Host and numeric edits save as numb
   h.dispose()
 })
 
-test('handoff card hands the unwrapped text to the official sidebar preview', () => {
+test('handoff card opens the list panel focused on that entry', () => {
   const h = harness()
   const definition = h.definitions[0]
   const state = definition.start({}, { event: event(handoff) })
@@ -298,12 +298,43 @@ test('handoff card hands the unwrapped text to the official sidebar preview', ()
   // 按钮在 <summary> 里：不拦下这次点击，卡片会跟着折叠或展开。
   assert.equal(prevented, true)
   assert.equal(stopped, true)
-  assert.deepEqual(h.sidebar.opened.map(v => ({ kind: v.kind, key: v.options.key })), [{ kind: 'compaction-summary', key: 'compact-codex:12' }])
-  assert.match(h.sidebar.opened[0].content.summaryMarkdown, /^# 上下文交接/)
-  assert.doesNotMatch(h.sidebar.opened[0].content.summaryMarkdown, /compacted-summary/)
+  // 与侧栏引导页那一行同一种标签：打开列表面板，并带上这一条的事件编号。
+  assert.deepEqual(h.sidebar.opened.map(v => ({ kind: v.kind, focus: v.content.focusSeq, key: v.options.key })), [{ kind: 'compact-codex-handoffs', focus: 12, key: 'compact-codex:handoffs' }])
   h.dispose()
   const after = entry.Component({ node, t: h.ctx.locale.bind('compact-codex') })
   assert.equal(h.nodes(after).some(n => n.type === 'button'), false, 'service disposal removes the action')
+})
+
+test('opening the panel from a card pages back to that handoff and expands only it', async () => {
+  const h = harness()
+  const page = (records, more) => ({ ok: true, value: { records, hasMore: more } })
+  h.events.handler = async (query) => {
+    if (query.beforeSeq === undefined) {
+      return page([
+        { event: { type: 'compaction/summary', seq: 120, time: 2, data: { summary: [{ type: 'text', text: '# 上下文交接\n最近一次' }] } } }
+      ], true)
+    }
+    assert.equal(query.beforeSeq, 120)
+    return page([
+      { event: { type: 'compaction/summary', seq: 40, time: 1, data: { summary: [{ type: 'text', text: '# 上下文交接\n要定位的那一条' }] } } }
+    ], false)
+  }
+  const entry = h.slots.find(v => v.options.name === 'sidebar.right.pane.tab' && v.options.key === 'dsh-compact-codex/handoffs')
+  const props = {
+    ...entry.options.inject('session-1'),
+    t: bindT(h),
+    useTabInfo: () => ({ tab: { navigation: { params: { focusSeq: 40 } } } })
+  }
+  h.renderComponent(entry.Component, props)
+  await tick()
+  const tree = h.renderComponent(entry.Component, props)
+  const items = h.nodes(tree).filter(n => n.type === 'details')
+  assert.equal(items.length, 2, 'older page loaded so the target exists')
+  const openItems = items.filter(n => n.props.open === true)
+  assert.equal(openItems.length, 1, 'only the target entry starts expanded')
+  assert.match(h.text(openItems[0]), /要定位的那一条/)
+  assert.equal(h.nodes(tree).some(n => n.type === 'button' && n.props['data-action'] === 'load-more'), false)
+  h.dispose()
 })
 
 test('handoff card stays usable when the sidebar service is absent', () => {
