@@ -13,7 +13,7 @@ const defaults = {
 const numeric = new Set(['handoffTokens', 'cacheTtlMs', 'keepaliveAfterMs', 'minCacheReadTokens', 'idleKeepaliveBudget', 'maxConsecutiveFailures', 'coldMinTokens', 'checkEveryMs'])
 const plain = value => JSON.parse(JSON.stringify(value))
 
-function harness({ snapshot = { status: 'ready', writable: true, value: { options: defaults } }, service = true, sidebar = true, language = 'en', failGet = false } = {}) {
+function harness({ snapshot = { status: 'ready', writable: true, value: { options: defaults } }, service = true, sidebar = true, panel = true, language = 'en', failGet = false } = {}) {
   const slots = [], definitions = [], styles = [], effects = [], optional = [], optionalNames = new Map(), listeners = new Set(), writes = []
   const dictionaries = new Map(), optionalDisposers = new Set()
   let plugin, hookIndex = 0, hooks = [], pendingEffects = [], component, tree, result = true
@@ -31,14 +31,22 @@ function harness({ snapshot = { status: 'ready', writable: true, value: { option
     async set(key, value) { writes.push([key, plain(value)]); const accepted = typeof result === 'function' ? await result() : result; if (accepted) publish({ ...snapshot, value: { options: plain(value) } }); return accepted }
   }
   const forms = { get(id) { assert.equal(id, 'compact-codex'); if (failGet) throw new Error('forms denied'); return form } }
-  const sidebarRight = { opened: [], openContent(kind, content, options) { sidebarRight.opened.push({ kind, content, options }) } }
+  const sidebarRight = {
+    opened: [], openTabCalls: [],
+    openContent(kind, content, options) { sidebarRight.opened.push({ kind, content, options }) },
+    openTab(kind, options) { sidebarRight.openTabCalls.push({ kind, options }) }
+  }
+  const tabs = { registered: [], register(definition) { tabs.registered.push(definition); return () => { const i = tabs.registered.indexOf(definition); if (i >= 0) tabs.registered.splice(i, 1) } } }
+  const events = { handler: async () => ({ ok: true, value: { records: [], hasMore: false } }) }
+  const remote = { session: { events: (query, signal) => events.handler(query, signal) } }
+  const sessions = { subagentAddress: () => undefined }
   function publish(value) { snapshot = value; for (const fn of listeners) fn() }
   const document = {
     createElement: () => { const tag = { dataset: {}, textContent: '', remove() { const i = styles.indexOf(tag); if (i >= 0) styles.splice(i, 1) } }; return tag },
     querySelectorAll: () => [...styles], querySelector: () => styles[0] ?? null,
     head: { appendChild(tag) { styles.push(tag) }, querySelectorAll: () => [...styles] }
   }
-  vm.runInNewContext(client, { window: { __ModuleLoader__: { load(value) { assert.equal(value.id, 'dsh-compact-codex'); plugin = value.factory(name => { assert.equal(name, 'react'); return React }) } } }, document })
+  vm.runInNewContext(client, { window: { __ModuleLoader__: { load(value) { assert.equal(value.id, 'dsh-compact-codex'); plugin = value.factory(name => { assert.equal(name, 'react'); return React }) } } }, document, AbortController })
   const ctx = {
     effect(fn) { const off = fn(); if (typeof off === 'function') effects.push(off); return off },
     locale: { register(ns, value) { dictionaries.set(ns, value); return () => dictionaries.delete(ns) }, bind(ns) { return key => dictionaries.get(ns)?.[language]?.[key] ?? key } },
@@ -46,11 +54,12 @@ function harness({ snapshot = { status: 'ready', writable: true, value: { option
     uiConversation: { events: { register(value) { definitions.push(value); return () => definitions.splice(definitions.indexOf(value), 1) } } },
     inject(names, fn) {
       const services = plain(names)
-      const available = { configForms: service, sidebarRight: sidebar }
+      const available = { configForms: service, sidebarRight: sidebar, sidebarRightTabs: panel, remote: panel, 'remote.session': panel, sessions: panel }
+      const serviceOf = name => name === 'configForms' ? forms : name === 'sidebarRight' ? sidebarRight : name === 'sidebarRightTabs' ? tabs : (name === 'remote' || name === 'remote.session') ? remote : name === 'sessions' ? sessions : undefined
       const activate = () => {
         const owned = []
         const provided = { ...ctx, effect(fn) { const off = fn(); if (typeof off === 'function') owned.push(off) } }
-        for (const name of services) provided[name] = name === 'configForms' ? forms : name === 'sidebarRight' ? sidebarRight : undefined
+        for (const name of services) provided[name] = serviceOf(name)
         fn(provided)
         const dispose = () => { for (const off of owned.splice(0).reverse()) off(); optionalDisposers.delete(dispose) }
         optionalDisposers.add(dispose); effects.push(dispose)
@@ -65,6 +74,12 @@ function harness({ snapshot = { status: 'ready', writable: true, value: { option
   function page() { component = slots.find(v => v.options.name === 'plugins.bundle.config')?.Component; assert.ok(component, 'bundle detail config registered'); return render() }
   function nodes(node = tree) { if (node == null || typeof node !== 'object') return []; return [node, ...(node.props.children ?? []).flatMap(nodes)] }
   const text = (node = tree) => typeof node === 'string' || typeof node === 'number' ? String(node) : node?.props?.children.map(text).join(' ') ?? ''
+  function renderComponent(Component, props) {
+    hookIndex = 0; pendingEffects = []
+    tree = Component(props)
+    for (const fn of pendingEffects) fn()
+    return tree
+  }
   function renderNode(node) {
     const entry = slots.find(v => v.options.name === 'conversation.chat.node')
     assert.ok(entry, 'handoff renderer registered')
@@ -73,7 +88,7 @@ function harness({ snapshot = { status: 'ready', writable: true, value: { option
     for (const fn of pendingEffects) fn()
     return tree
   }
-  return { plugin, ctx, slots, definitions, styles, writes, dictionaries, form, publish, page, render, renderNode, nodes, text, sidebar: sidebarRight, setResult(value) { result = value }, enableService(name = 'configForms') { optionalNames.get(name)?.() }, disableService() { for (const off of [...optionalDisposers]) off() }, subscriptionCount: () => listeners.size, dispose() { for (const hook of hooks) hook?.off?.(); for (const fn of effects.reverse()) fn() }, input(name) { return nodes().find(n => n.type === 'input' && n.props.name === name) }, button(action) { return nodes().find(n => n.type === 'button' && n.props['data-action'] === action) } }
+  return { plugin, ctx, slots, definitions, styles, writes, dictionaries, form, publish, page, render, renderComponent, renderNode, nodes, text, sidebar: sidebarRight, tabs, remote, events, sessions, setResult(value) { result = value }, enableService(name = 'configForms') { optionalNames.get(name)?.() }, disableService() { for (const off of [...optionalDisposers]) off() }, subscriptionCount: () => listeners.size, dispose() { for (const hook of hooks) hook?.off?.(); for (const fn of effects.reverse()) fn() }, input(name) { return nodes().find(n => n.type === 'input' && n.props.name === name) }, button(action) { return nodes().find(n => n.type === 'button' && n.props['data-action'] === action) } }
 }
 
 const event = (text, source = 'compact-checkpoint') => ({ type: 'user/message', seq: 12, data: { source: { kind: source }, content: [{ type: 'text', text }] } })
@@ -298,6 +313,81 @@ test('handoff card stays usable when the sidebar service is absent', () => {
   const tree = h.renderNode(definition.buildViewNode({ state, key: 'k', id: '12' }))
   assert.equal(h.nodes(tree).some(n => n.type === 'button'), false)
   assert.match(h.text(tree), /上下文交接/)
+  h.dispose()
+})
+
+const tick = () => new Promise(resolve => setTimeout(resolve, 0))
+const bindT = h => h.ctx.locale.bind('compact-codex')
+
+test('handoff panel registers its tab type, body slot and a header entry that opens it', () => {
+  const h = harness()
+  assert.deepEqual(h.tabs.registered.map(v => v.kind), ['compact-codex-handoffs'])
+  assert.equal(h.tabs.registered[0].id, 'dsh-compact-codex/handoffs')
+  const body = h.slots.find(v => v.options.name === 'sidebar.right.pane.tab' && v.options.key === 'dsh-compact-codex/handoffs')
+  assert.ok(body, 'panel body registered under the type id')
+  const header = h.slots.find(v => v.options.name === 'conversation.session.header.utilities')
+  assert.ok(header, 'header entry registered')
+  const tree = h.renderComponent(header.Component, { ...header.options.inject('session-1'), t: bindT(h) })
+  const button = h.nodes(tree).find(n => n.type === 'button' && n.props['data-action'] === 'open-handoffs')
+  assert.ok(button, 'header shows the handoff entry')
+  button.props.onClick()
+  assert.deepEqual(h.sidebar.openTabCalls.map(v => v.kind), ['compact-codex-handoffs'])
+  h.dispose()
+  assert.equal(h.tabs.registered.length, 0)
+})
+
+test('handoff panel lists summaries newest first and pages older ones without the chat stream', async () => {
+  const h = harness()
+  const page = (records, more) => ({ ok: true, value: { records, hasMore: more } })
+  h.events.handler = async (query) => {
+    if (query.beforeSeq === undefined) {
+      return page([
+        { event: { type: 'user/message', seq: 131, time: 2, data: {} } },
+        { event: { type: 'compaction/summary', seq: 120, time: 2, data: { summary: [{ type: 'text', text: '# 上下文交接\n最近一次请求' }] } } },
+        { event: { type: 'compaction/summary', seq: 100, time: 1, data: { summary: [{ type: 'text', text: '# 上下文交接\n再早一点' }] } } }
+      ], true)
+    }
+    assert.equal(query.beforeSeq, 100)
+    return page([
+      { event: { type: 'compaction/summary', seq: 40, time: 0, data: { summary: [{ type: 'text', text: '# 上下文交接\n最早的交接' }] } } }
+    ], false)
+  }
+  const entry = h.slots.find(v => v.options.name === 'sidebar.right.pane.tab' && v.options.key === 'dsh-compact-codex/handoffs')
+  const props = { ...entry.options.inject('session-1'), t: bindT(h) }
+  h.renderComponent(entry.Component, props)
+  await tick()
+  let tree = h.renderComponent(entry.Component, props)
+  let text = h.text(tree)
+  assert.match(text, /最近一次请求/)
+  assert.match(text, /再早一点/)
+  assert.ok(text.indexOf('最近一次请求') < text.indexOf('再早一点'), 'newest first')
+  const more = h.nodes(tree).find(n => n.type === 'button' && n.props['data-action'] === 'load-more')
+  assert.ok(more, 'earlier page offered')
+  more.props.onClick()
+  await tick()
+  tree = h.renderComponent(entry.Component, props)
+  assert.match(h.text(tree), /最早的交接/)
+  assert.equal(h.nodes(tree).some(n => n.type === 'button' && n.props['data-action'] === 'load-more'), false)
+  h.dispose()
+})
+
+test('handoff panel reports a failed read instead of showing an empty list', async () => {
+  const h = harness()
+  h.events.handler = async () => ({ ok: false, error: { code: 'unavailable' } })
+  const entry = h.slots.find(v => v.options.name === 'sidebar.right.pane.tab' && v.options.key === 'dsh-compact-codex/handoffs')
+  const props = { ...entry.options.inject('session-1'), t: bindT(h) }
+  h.renderComponent(entry.Component, props)
+  await tick()
+  const tree = h.renderComponent(entry.Component, props)
+  assert.match(h.text(tree), /failed/i)
+  h.dispose()
+})
+
+test('handoff panel and header entry disappear when the sidebar services are absent', () => {
+  const h = harness({ panel: false })
+  assert.equal(h.tabs.registered.length, 0)
+  assert.equal(h.slots.some(v => v.options.name === 'conversation.session.header.utilities'), false)
+  assert.equal(h.slots.some(v => v.options.name === 'sidebar.right.pane.tab'), false)
   h.dispose()
 })
 

@@ -77,6 +77,12 @@
 
 ## 浏览器显示与配置
 
-[客户端](<../lib/client.js>) 只匹配来源为 `compact-checkpoint`、且包含插件交接标题的检查点，不全局隐藏普通消息或其他后端的压缩行。卡片上的「侧栏打开」调用 `sidebarRight.openContent('compaction-summary', …)`，把剥掉 `<compacted-summary>` 包装的交接正文交给官方右侧栏的压缩摘要预览标签；`sidebarRight` 是可选服务，缺席时该按钮不渲染，卡片仍按原样展开。样式、事件定义、槽位与侧栏桥接随插件生命周期释放。客户端为手写浏览器 bundle，无额外构建步骤；是否自动加载更新仍取决于宿主热更新能力，不能据此保证保存即生效。
+[客户端](<../lib/client.js>) 只匹配来源为 `compact-checkpoint`、且包含插件交接标题的检查点，不全局隐藏普通消息或其他后端的压缩行。
+
+会话标题栏的「交接」入口调用 `sidebarRight.openTab('compact-codex-handoffs')`，打开右侧栏的交接记录面板。面板的数据不走聊天装配结果，而是用 `remote.session.events`（`maxMessages` 分页、`beforeSeq` 往前翻）直接读宿主会话事件，从 `compaction/summary` 的 `summary` 文本块取交接正文，最新的排在前面；一页里可能没有交接，所以「载入更早的交接」按页继续。读失败时显示失败说明，不伪装成空列表。
+
+卡片上的「侧栏打开」调用 `sidebarRight.openContent('compaction-summary', …)`，把剥掉 `<compacted-summary>` 包装的交接正文交给官方右侧栏的压缩摘要预览标签。
+
+`sidebarRight`、`sidebarRightTabs`、`remote` 都是可选服务，缺席时对应的入口、按钮或面板不渲染，卡片仍按原样展开。样式、事件定义、标签类型、槽位与侧栏桥接随插件生命周期释放。客户端为手写浏览器 bundle，无额外构建步骤；是否自动加载更新仍取决于宿主热更新能力，不能据此保证保存即生效。
 
 配置表单位于设置 → 插件 → 本插件详情页，使用 `plugins.bundle.config` 槽位与 `configForms` 保存整个 `options` 对象。配置服务缺失或只读时，交接渲染仍独立工作；表单显示等待、保存成功和失败状态。截图仅为预览，不代替真实宿主与浏览器验收。
