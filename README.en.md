@@ -18,7 +18,7 @@ This plugin instead reads existing session events and the task ledger to collect
 
 1. **Scope** — looks up the `compaction` service each agent actually uses. Only instances whose prototype is exactly the official `BasicCompactionEngine.prototype` and which have no own `summarize` property are eligible. Custom backends, subclasses, and existing instance-level summary changes keep their behavior.
 2. **During compaction** — wraps the instance's `summarize()` to generate a handoff. If the instance has no own `compactIfNeeded()`, it also wraps that method for the pre-compaction bookkeeping reminder. It does not modify the official prototype, rebuild the engine, or override presets. Registered agents get handoffs; other owners use the original method.
-3. **Display** — renders a handoff card only for messages sourced from `compact-checkpoint` that contain the plugin's handoff heading. Other compaction rows are not hidden.
+3. **Display** — renders a handoff card only for messages sourced from `compact-checkpoint` that contain the plugin's handoff heading. Other compaction rows are not hidden. The card's **Open in sidebar** action hands the handoff text to the official compaction-summary preview tab in the right Sidebar; when the Host has no such service the action is absent and the card still works.
 4. **Disable or uninstall** — releases the agent's tools, listeners, and keepalive resources. The last user of an instance restores the plugin-wrapped methods, unless another plugin has since changed them. Existing compaction history is not rolled back.
 
 ## Features and boundaries

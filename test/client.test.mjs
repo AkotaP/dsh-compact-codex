@@ -13,8 +13,8 @@ const defaults = {
 const numeric = new Set(['handoffTokens', 'cacheTtlMs', 'keepaliveAfterMs', 'minCacheReadTokens', 'idleKeepaliveBudget', 'maxConsecutiveFailures', 'coldMinTokens', 'checkEveryMs'])
 const plain = value => JSON.parse(JSON.stringify(value))
 
-function harness({ snapshot = { status: 'ready', writable: true, value: { options: defaults } }, service = true, language = 'en', failGet = false } = {}) {
-  const slots = [], definitions = [], styles = [], effects = [], optional = [], listeners = new Set(), writes = []
+function harness({ snapshot = { status: 'ready', writable: true, value: { options: defaults } }, service = true, sidebar = true, language = 'en', failGet = false } = {}) {
+  const slots = [], definitions = [], styles = [], effects = [], optional = [], optionalNames = new Map(), listeners = new Set(), writes = []
   const dictionaries = new Map(), optionalDisposers = new Set()
   let plugin, hookIndex = 0, hooks = [], pendingEffects = [], component, tree, result = true
   const React = {
@@ -31,6 +31,7 @@ function harness({ snapshot = { status: 'ready', writable: true, value: { option
     async set(key, value) { writes.push([key, plain(value)]); const accepted = typeof result === 'function' ? await result() : result; if (accepted) publish({ ...snapshot, value: { options: plain(value) } }); return accepted }
   }
   const forms = { get(id) { assert.equal(id, 'compact-codex'); if (failGet) throw new Error('forms denied'); return form } }
+  const sidebarRight = { opened: [], openContent(kind, content, options) { sidebarRight.opened.push({ kind, content, options }) } }
   function publish(value) { snapshot = value; for (const fn of listeners) fn() }
   const document = {
     createElement: () => { const tag = { dataset: {}, textContent: '', remove() { const i = styles.indexOf(tag); if (i >= 0) styles.splice(i, 1) } }; return tag },
@@ -44,22 +45,35 @@ function harness({ snapshot = { status: 'ready', writable: true, value: { option
     slots: { inject(name, fn) { return ctx.effect(fn) }, register(options, Component) { const entry = { options, Component }; slots.push(entry); return () => slots.splice(slots.indexOf(entry), 1) } },
     uiConversation: { events: { register(value) { definitions.push(value); return () => definitions.splice(definitions.indexOf(value), 1) } } },
     inject(names, fn) {
-      assert.deepEqual(plain(names), ['configForms'])
+      const services = plain(names)
+      const available = { configForms: service, sidebarRight: sidebar }
       const activate = () => {
         const owned = []
-        fn({ ...ctx, configForms: forms, effect(fn) { const off = fn(); if (typeof off === 'function') owned.push(off) } })
+        const provided = { ...ctx, effect(fn) { const off = fn(); if (typeof off === 'function') owned.push(off) } }
+        for (const name of services) provided[name] = name === 'configForms' ? forms : name === 'sidebarRight' ? sidebarRight : undefined
+        fn(provided)
         const dispose = () => { for (const off of owned.splice(0).reverse()) off(); optionalDisposers.delete(dispose) }
         optionalDisposers.add(dispose); effects.push(dispose)
       }
-      optional.push(activate); if (service) activate()
+      optional.push(activate)
+      optionalNames.set(services[0], activate)
+      if (services.every(name => available[name])) activate()
     }
   }
   plugin.apply(ctx)
   function render(view = 'page') { hookIndex = 0; pendingEffects = []; tree = component({ view, t: ctx.locale.bind('compact-codex') }); for (const fn of pendingEffects) fn(); return tree }
   function page() { component = slots.find(v => v.options.name === 'plugins.bundle.config')?.Component; assert.ok(component, 'bundle detail config registered'); return render() }
-  function nodes(node = tree) { if (node == null || typeof node !== 'object') return []; return [node, ...node.props.children.flatMap(nodes)] }
+  function nodes(node = tree) { if (node == null || typeof node !== 'object') return []; return [node, ...(node.props.children ?? []).flatMap(nodes)] }
   const text = (node = tree) => typeof node === 'string' || typeof node === 'number' ? String(node) : node?.props?.children.map(text).join(' ') ?? ''
-  return { plugin, ctx, slots, definitions, styles, writes, dictionaries, form, publish, page, render, nodes, text, setResult(value) { result = value }, enableService() { optional.at(-1)() }, disableService() { for (const off of [...optionalDisposers]) off() }, subscriptionCount: () => listeners.size, dispose() { for (const hook of hooks) hook?.off?.(); for (const fn of effects.reverse()) fn() }, input(name) { return nodes().find(n => n.type === 'input' && n.props.name === name) }, button(action) { return nodes().find(n => n.type === 'button' && n.props['data-action'] === action) } }
+  function renderNode(node) {
+    const entry = slots.find(v => v.options.name === 'conversation.chat.node')
+    assert.ok(entry, 'handoff renderer registered')
+    hookIndex = 0; pendingEffects = []
+    tree = entry.Component({ node, t: ctx.locale.bind('compact-codex') })
+    for (const fn of pendingEffects) fn()
+    return tree
+  }
+  return { plugin, ctx, slots, definitions, styles, writes, dictionaries, form, publish, page, render, renderNode, nodes, text, sidebar: sidebarRight, setResult(value) { result = value }, enableService(name = 'configForms') { optionalNames.get(name)?.() }, disableService() { for (const off of [...optionalDisposers]) off() }, subscriptionCount: () => listeners.size, dispose() { for (const hook of hooks) hook?.off?.(); for (const fn of effects.reverse()) fn() }, input(name) { return nodes().find(n => n.type === 'input' && n.props.name === name) }, button(action) { return nodes().find(n => n.type === 'button' && n.props['data-action'] === action) } }
 }
 
 const event = (text, source = 'compact-checkpoint') => ({ type: 'user/message', seq: 12, data: { source: { kind: source }, content: [{ type: 'text', text }] } })
@@ -252,6 +266,38 @@ test('each supported option is read from the Host and numeric edits save as numb
   await h.button('save').props.onClick(); h.render()
   assert.deepEqual(h.writes, [['options', { ...defaults, ...options, handoffTokens: 25000 }]])
   assert.equal(h.nodes().find(n => n.props.role === 'alert'), undefined)
+  h.dispose()
+})
+
+test('handoff card hands the unwrapped text to the official sidebar preview', () => {
+  const h = harness()
+  const definition = h.definitions[0]
+  const state = definition.start({}, { event: event(handoff) })
+  const node = definition.buildViewNode({ state, key: 'k', id: '12' })
+  const entry = h.slots.find(v => v.options.name === 'conversation.chat.node')
+  const tree = h.renderNode(node)
+  const open = h.nodes(tree).find(n => n.type === 'button' && n.props['data-action'] === 'open-in-sidebar')
+  assert.ok(open, 'action renders while the sidebar service is present')
+  let prevented = false, stopped = false
+  open.props.onClick({ preventDefault() { prevented = true }, stopPropagation() { stopped = true } })
+  // 按钮在 <summary> 里：不拦下这次点击，卡片会跟着折叠或展开。
+  assert.equal(prevented, true)
+  assert.equal(stopped, true)
+  assert.deepEqual(h.sidebar.opened.map(v => ({ kind: v.kind, key: v.options.key })), [{ kind: 'compaction-summary', key: 'compact-codex:12' }])
+  assert.match(h.sidebar.opened[0].content.summaryMarkdown, /^# 上下文交接/)
+  assert.doesNotMatch(h.sidebar.opened[0].content.summaryMarkdown, /compacted-summary/)
+  h.dispose()
+  const after = entry.Component({ node, t: h.ctx.locale.bind('compact-codex') })
+  assert.equal(h.nodes(after).some(n => n.type === 'button'), false, 'service disposal removes the action')
+})
+
+test('handoff card stays usable when the sidebar service is absent', () => {
+  const h = harness({ sidebar: false })
+  const definition = h.definitions[0]
+  const state = definition.start({}, { event: event(handoff) })
+  const tree = h.renderNode(definition.buildViewNode({ state, key: 'k', id: '12' }))
+  assert.equal(h.nodes(tree).some(n => n.type === 'button'), false)
+  assert.match(h.text(tree), /上下文交接/)
   h.dispose()
 })
 
