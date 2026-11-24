@@ -319,19 +319,19 @@ test('handoff card stays usable when the sidebar service is absent', () => {
 const tick = () => new Promise(resolve => setTimeout(resolve, 0))
 const bindT = h => h.ctx.locale.bind('compact-codex')
 
-test('handoff panel registers its tab type, body slot and a header entry that opens it', () => {
+test('handoff panel registers its tab type with a sidebar guide row and its body slot', () => {
   const h = harness()
   assert.deepEqual(h.tabs.registered.map(v => v.kind), ['compact-codex-handoffs'])
-  assert.equal(h.tabs.registered[0].id, 'dsh-compact-codex/handoffs')
+  const definition = h.tabs.registered[0]
+  assert.equal(definition.id, 'dsh-compact-codex/handoffs')
+  assert.equal(definition.guide.length, 1)
+  assert.equal(definition.guide[0].id, 'handoffs')
+  assert.equal(definition.guide[0].title(), 'Handoff history')
+  assert.equal(typeof definition.guide[0].description(), 'string')
   const body = h.slots.find(v => v.options.name === 'sidebar.right.pane.tab' && v.options.key === 'dsh-compact-codex/handoffs')
   assert.ok(body, 'panel body registered under the type id')
-  const header = h.slots.find(v => v.options.name === 'conversation.session.header.utilities')
-  assert.ok(header, 'header entry registered')
-  const tree = h.renderComponent(header.Component, { ...header.options.inject('session-1'), t: bindT(h) })
-  const button = h.nodes(tree).find(n => n.type === 'button' && n.props['data-action'] === 'open-handoffs')
-  assert.ok(button, 'header shows the handoff entry')
-  button.props.onClick()
-  assert.deepEqual(h.sidebar.openTabCalls.map(v => v.kind), ['compact-codex-handoffs'])
+  // 标题栏不再挂入口：这个特性只能从侧栏引导页进入。
+  assert.equal(h.slots.some(v => v.options.name === 'conversation.session.header.utilities'), false)
   h.dispose()
   assert.equal(h.tabs.registered.length, 0)
 })
@@ -383,10 +383,9 @@ test('handoff panel reports a failed read instead of showing an empty list', asy
   h.dispose()
 })
 
-test('handoff panel and header entry disappear when the sidebar services are absent', () => {
+test('handoff panel disappears when the sidebar services are absent', () => {
   const h = harness({ panel: false })
   assert.equal(h.tabs.registered.length, 0)
-  assert.equal(h.slots.some(v => v.options.name === 'conversation.session.header.utilities'), false)
   assert.equal(h.slots.some(v => v.options.name === 'sidebar.right.pane.tab'), false)
   h.dispose()
 })

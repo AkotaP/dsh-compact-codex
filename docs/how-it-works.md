@@ -79,7 +79,7 @@
 
 [客户端](<../lib/client.js>) 只匹配来源为 `compact-checkpoint`、且包含插件交接标题的检查点，不全局隐藏普通消息或其他后端的压缩行。
 
-会话标题栏的「交接」入口调用 `sidebarRight.openTab('compact-codex-handoffs')`，打开右侧栏的交接记录面板。面板的数据不走聊天装配结果，而是用 `remote.session.events`（`maxMessages` 分页、`beforeSeq` 往前翻）直接读宿主会话事件，从 `compaction/summary` 的 `summary` 文本块取交接正文，最新的排在前面；一页里可能没有交接，所以「载入更早的交接」按页继续。读失败时显示失败说明，不伪装成空列表。
+标签类型注册时的 `guide` 声明贡献右侧栏引导页里的「交接记录」一行，选中它就打开 `compact-codex-handoffs` 标签；入口不进入会话标题栏，也不依赖任何聊天卡片。面板的数据不走聊天装配结果，而是用 `remote.session.events`（`maxMessages` 分页、`beforeSeq` 往前翻）直接读宿主会话事件，从 `compaction/summary` 的 `summary` 文本块取交接正文，最新的排在前面；一页里可能没有交接，所以「载入更早的交接」按页继续。读失败时显示失败说明，不伪装成空列表。
 
 卡片上的「侧栏打开」调用 `sidebarRight.openContent('compaction-summary', …)`，把剥掉 `<compacted-summary>` 包装的交接正文交给官方右侧栏的压缩摘要预览标签。
 
