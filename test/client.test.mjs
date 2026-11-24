@@ -328,6 +328,11 @@ test('handoff panel registers its tab type with a sidebar guide row and its body
   assert.equal(definition.guide[0].id, 'handoffs')
   assert.equal(definition.guide[0].title(), 'Handoff history')
   assert.equal(typeof definition.guide[0].description(), 'string')
+  assert.equal(typeof definition.guide[0].icon, 'function', 'guide row carries its own glyph')
+  const glyph = h.renderComponent(definition.guide[0].icon, { size: 22, className: 'x' })
+  assert.equal(glyph.type, 'svg')
+  assert.equal(glyph.props.width, 22)
+  assert.equal(glyph.props.className, 'x')
   const body = h.slots.find(v => v.options.name === 'sidebar.right.pane.tab' && v.options.key === 'dsh-compact-codex/handoffs')
   assert.ok(body, 'panel body registered under the type id')
   // 标题栏不再挂入口：这个特性只能从侧栏引导页进入。
